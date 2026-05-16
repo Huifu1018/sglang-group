@@ -1,0 +1,28 @@
+{
+  "engine": "sglang",
+  "sglang_version": "0.5.9",
+  "algorithm": "SGLANG_GROUP",
+  "method": "auto",
+  "target_model": "nvidia/MiniMax-M2.7-NVFP4",
+  "draft_model": "Qwen/Qwen2.5-1.5B-Instruct",
+  "server_args": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "trust_remote_code": true,
+    "disable_overlap_schedule": true,
+    "speculative_num_steps": 4,
+    "speculative_num_draft_tokens": 5
+  },
+  "environment": {
+    "SGLANG_GROUP_METHOD": "auto",
+    "SGLANG_GROUP_AUTO_GREEDY_METHOD": "itl-base-slem",
+    "SGLANG_GROUP_AUTO_MID_SAMPLING_METHOD": "itl-base-tli",
+    "SGLANG_GROUP_AUTO_HIGH_SAMPLING_METHOD": "itl",
+    "SGLANG_GROUP_AUTO_HIGH_TEMP_THRESHOLD": "0.9",
+    "SGLANG_GROUP_DRAFT_DTYPE": "auto",
+    "SGLANG_GROUP_DTW_WINDOW": "8",
+    "SGLANG_GROUP_ASSISTANT_LOOKBEHIND": "10",
+    "SGLANG_GROUP_TARGET_LOOKBEHIND": "10",
+    "SGLANG_GROUP_ENABLE_DRAFT_CACHE": "true"
+  }
+}

@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sglang-group"
+version = "0.1.0"
+description = "Unified SGLang 0.5.9 integration for heterogeneous-vocabulary speculative decoding methods"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+  {name = "Huifu1018"}
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Huifu1018/sglang-group"
+Repository = "https://github.com/Huifu1018/sglang-group"
+Issues = "https://github.com/Huifu1018/sglang-group/issues"
+
+[project.optional-dependencies]
+sglang = [
+  "sglang==0.5.9",
+  "torch",
+  "transformers>=4.50",
+  "accelerate",
+  "sentencepiece>=0.2",
+  "safetensors>=0.4"
+]
+hf = [
+  "torch",
+  "transformers>=4.50",
+  "accelerate",
+  "sentencepiece>=0.2",
+  "safetensors>=0.4"
+]
+dev = [
+  "pytest>=8",
+  "ruff>=0.9"
+]
+
+[project.entry-points."sglang.srt.plugins"]
+sglang_group = "sglang_group.sglang.plugin:activate"
+
+[project.scripts]
+sglang-group-launch = "sglang_group.cli.launch:main"
+sglang-group-preflight = "sglang_group.cli.preflight:main"
+
+[tool.setuptools.packages.find]
+include = ["sglang_group*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
