@@ -186,6 +186,10 @@ class HeterogeneousDraftProposer:
             raise
 
     def evict(self, rids: Sequence[str]) -> None:
+        if self.native_backend is not None:
+            evict = getattr(self.native_backend, "evict", None)
+            if callable(evict) and evict(rids):
+                self.stats.cache_evictions += 1
         for rid in rids:
             if self._states.pop(str(rid), None) is not None:
                 self.stats.cache_evictions += 1
@@ -198,6 +202,10 @@ class HeterogeneousDraftProposer:
             self.native_backend.clear()
 
     def cache_size(self) -> int:
+        if self.native_backend is not None:
+            cache_size = getattr(self.native_backend, "cache_size", None)
+            if callable(cache_size):
+                return int(cache_size())
         return len(self._states)
 
     def _propose_itl(
@@ -221,27 +229,30 @@ class HeterogeneousDraftProposer:
         logits = state.next_token_logits
         context_len = len(state.input_ids)
 
-        with torch.inference_mode():
-            for _ in range(max_draft_tokens):
-                next_token = int(torch.argmax(logits, dim=-1)[0])
-                draft_ids.append(next_token)
+        try:
+            with torch.inference_mode():
+                for _ in range(max_draft_tokens):
+                    next_token = int(torch.argmax(logits, dim=-1)[0])
+                    draft_ids.append(next_token)
 
-                draft_text = self._decode(self.draft_tokenizer, draft_ids)
-                proxy_ids = self._encode(self.target_tokenizer, draft_text)
-                if len(proxy_ids) >= max_target_tokens:
-                    break
+                    draft_text = self._decode(self.draft_tokenizer, draft_ids)
+                    proxy_ids = self._encode(self.target_tokenizer, draft_text)
+                    if len(proxy_ids) >= max_target_tokens:
+                        break
 
-                generation_ids.append(next_token)
-                context_len += 1
-                logits, generation_past = self._forward_one(
-                    token_id=next_token,
-                    full_ids=generation_ids,
-                    context_len=context_len,
-                    past_key_values=generation_past,
-                )
-                eos_token_id = getattr(self.draft_tokenizer, "eos_token_id", None)
-                if eos_token_id is not None and next_token == int(eos_token_id):
-                    break
+                    generation_ids.append(next_token)
+                    context_len += 1
+                    logits, generation_past = self._forward_one(
+                        token_id=next_token,
+                        full_ids=generation_ids,
+                        context_len=context_len,
+                        past_key_values=generation_past,
+                    )
+                    eos_token_id = getattr(self.draft_tokenizer, "eos_token_id", None)
+                    if eos_token_id is not None and next_token == int(eos_token_id):
+                        break
+        finally:
+            self._rollback_past_key_values(generation_past)
 
         proxy_ids = proxy_ids[:max_target_tokens]
         return BaseProposal(
@@ -276,34 +287,37 @@ class HeterogeneousDraftProposer:
         logits = state.next_token_logits
         context_len = len(state.input_ids)
 
-        with torch.inference_mode():
-            for _ in range(max_draft_tokens):
-                next_token = int(torch.argmax(logits, dim=-1)[0])
-                draft_ids.append(next_token)
-                proxy_ids = slem_target_proxies_from_assistant_window(
-                    target_tokenizer=self.target_tokenizer,
-                    assistant_tokenizer=self.draft_tokenizer,
-                    current_target_ids=current_target_ids,
-                    assistant_context_ids=state.input_ids,
-                    assistant_new_ids=draft_ids,
-                    assistant_lookbehind=self.config.assistant_lookbehind,
-                    target_lookbehind=self.config.target_lookbehind,
-                    add_special_tokens=self.config.add_special_tokens,
-                )
-                if len(proxy_ids) >= max_target_tokens:
-                    break
+        try:
+            with torch.inference_mode():
+                for _ in range(max_draft_tokens):
+                    next_token = int(torch.argmax(logits, dim=-1)[0])
+                    draft_ids.append(next_token)
+                    proxy_ids = slem_target_proxies_from_assistant_window(
+                        target_tokenizer=self.target_tokenizer,
+                        assistant_tokenizer=self.draft_tokenizer,
+                        current_target_ids=current_target_ids,
+                        assistant_context_ids=state.input_ids,
+                        assistant_new_ids=draft_ids,
+                        assistant_lookbehind=self.config.assistant_lookbehind,
+                        target_lookbehind=self.config.target_lookbehind,
+                        add_special_tokens=self.config.add_special_tokens,
+                    )
+                    if len(proxy_ids) >= max_target_tokens:
+                        break
 
-                generation_ids.append(next_token)
-                context_len += 1
-                logits, generation_past = self._forward_one(
-                    token_id=next_token,
-                    full_ids=generation_ids,
-                    context_len=context_len,
-                    past_key_values=generation_past,
-                )
-                eos_token_id = getattr(self.draft_tokenizer, "eos_token_id", None)
-                if eos_token_id is not None and next_token == int(eos_token_id):
-                    break
+                    generation_ids.append(next_token)
+                    context_len += 1
+                    logits, generation_past = self._forward_one(
+                        token_id=next_token,
+                        full_ids=generation_ids,
+                        context_len=context_len,
+                        past_key_values=generation_past,
+                    )
+                    eos_token_id = getattr(self.draft_tokenizer, "eos_token_id", None)
+                    if eos_token_id is not None and next_token == int(eos_token_id):
+                        break
+        finally:
+            self._rollback_past_key_values(generation_past)
 
         return BaseProposal(
             method="itl-base-slem",
@@ -340,33 +354,39 @@ class HeterogeneousDraftProposer:
         logits = state.next_token_logits
         context_len = len(state.input_ids)
 
-        with torch.inference_mode():
-            for _ in range(max_draft_tokens):
-                target_probs, selected_assistant_id, selected_target_id = (
-                    self._sample_tli_token(logits, sampling=sampling)
-                )
-                prob_rows.append(target_probs)
-                draft_ids.append(selected_assistant_id)
-                target_ids.append(selected_target_id)
+        try:
+            with torch.inference_mode():
+                for _ in range(max_draft_tokens):
+                    target_probs, selected_assistant_id, selected_target_id = (
+                        self._sample_tli_token(logits, sampling=sampling)
+                    )
+                    prob_rows.append(target_probs)
+                    draft_ids.append(selected_assistant_id)
+                    target_ids.append(selected_target_id)
 
-                generation_ids.append(selected_assistant_id)
-                context_len += 1
-                logits, generation_past = self._forward_one(
-                    token_id=selected_assistant_id,
-                    full_ids=generation_ids,
-                    context_len=context_len,
-                    past_key_values=generation_past,
-                )
-                eos_token_id = getattr(self.draft_tokenizer, "eos_token_id", None)
-                if eos_token_id is not None and selected_assistant_id == int(eos_token_id):
-                    break
+                    generation_ids.append(selected_assistant_id)
+                    context_len += 1
+                    logits, generation_past = self._forward_one(
+                        token_id=selected_assistant_id,
+                        full_ids=generation_ids,
+                        context_len=context_len,
+                        past_key_values=generation_past,
+                    )
+                    eos_token_id = getattr(self.draft_tokenizer, "eos_token_id", None)
+                    if (
+                        eos_token_id is not None
+                        and selected_assistant_id == int(eos_token_id)
+                    ):
+                        break
 
-            # The final slot is the proposal distribution after the last draft
-            # token. SGLang's tree verifier uses it for the target-only bonus
-            # position and requires a row-aligned probability tensor.
-            if prob_rows:
-                target_probs, _, _ = self._sample_tli_token(logits, sampling=sampling)
-                prob_rows.append(target_probs)
+                # The final slot is the proposal distribution after the last draft
+                # token. SGLang's tree verifier uses it for the target-only bonus
+                # position and requires a row-aligned probability tensor.
+                if prob_rows:
+                    target_probs, _, _ = self._sample_tli_token(logits, sampling=sampling)
+                    prob_rows.append(target_probs)
+        finally:
+            self._rollback_past_key_values(generation_past)
 
         return BaseProposal(
             method="itl-base-tli",
@@ -458,17 +478,27 @@ class HeterogeneousDraftProposer:
             raise ValueError("draft context must contain at least one token.")
 
         if self.native_backend is not None:
-            session = self.native_backend.prefill(context_ids, rid=rid)
-            self.stats.cache_rebuilds += 1
+            ensure_session = getattr(self.native_backend, "ensure_session", None)
+            if callable(ensure_session):
+                session, cache_event = ensure_session(context_ids, rid=rid)
+            else:
+                session = self.native_backend.prefill(context_ids, rid=rid)
+                cache_event = "sglang-rebuild"
+            if cache_event.endswith("hit"):
+                self.stats.cache_hits += 1
+            elif cache_event.endswith("extend"):
+                self.stats.cache_extensions += 1
+            else:
+                self.stats.cache_rebuilds += 1
             return (
                 DraftRequestState(
                     rid=rid,
                     text=current_text,
-                    input_ids=context_ids,
+                    input_ids=tuple(getattr(session, "accepted_input_ids", context_ids)),
                     past_key_values=session,
                     next_token_logits=session.next_token_logits,
                 ),
-                "sglang-rebuild",
+                cache_event,
             )
 
         cached = self._states.get(rid) if self.config.enable_draft_cache else None
@@ -611,10 +641,20 @@ class HeterogeneousDraftProposer:
         if past_key_values is None:
             return None
         if self.native_backend is not None:
+            begin_speculative = getattr(past_key_values, "begin_speculative", None)
+            if callable(begin_speculative):
+                return begin_speculative()
             return past_key_values
         if not self.config.clone_draft_cache:
             return past_key_values
         return _clone_cache(past_key_values)
+
+    def _rollback_past_key_values(self, past_key_values) -> None:
+        if self.native_backend is None or past_key_values is None:
+            return
+        rollback = getattr(past_key_values, "rollback_speculative", None)
+        if callable(rollback):
+            rollback()
 
     def _alignment_cost(
         self,

@@ -156,20 +156,27 @@ its config, SGLang can detect it; otherwise force one only when needed:
 --sglang-group-native-draft-quantization awq
 ```
 
-The native backend defaults to a single scratch draft request. If
-`--sglang-group-max-context-tokens` is set, it derives a small draft KV pool from
-that context cap. You can override it directly:
+The native backend keeps an accepted-context draft KV cache for the active
+request. During proposal generation it snapshots the draft SGLang batch, decodes
+speculative draft tokens, then rolls back only the speculative allocator and
+batch state. Accepted target text is committed on the next proposal by extending
+that draft cache, so repeated full draft prefill is avoided for single active
+request streams.
+
+If `--sglang-group-max-context-tokens` is set, the backend derives a draft KV
+pool from that context cap. You can override it directly:
 
 ```bash
 --sglang-group-native-draft-cache-tokens 8192 \
 --sglang-group-native-draft-max-requests 1
 ```
 
-Important: for heterogeneous tokenizers, rejected speculative draft tokens
-cannot be committed into a persistent draft KV cache safely without a deeper
-SGLang scheduler state fork. The SGLang-native backend therefore uses a
-scratch-local draft batch per proposal. It is correct and engine-native, but
-long-context speed depends heavily on context truncation and draft size.
+For concurrent requests, the current native cache is conservative: one active
+draft session is kept and different request ids trigger a rebuild. This preserves
+correctness while keeping rejected heterogeneous-tokenizer draft tokens isolated.
+If you run high concurrency, use `--sglang-group-max-context-tokens` to cap the
+rebuild cost, or use backend `transformers` until multi-session native draft
+pooling is needed.
 
 ## Force-Method Examples
 
@@ -251,9 +258,10 @@ For your current MiniMax-M2.7-AWQ/NVFP4 measurements:
 - `temperature=1`: start with `itl`.
 - Keep `--speculative-num-draft-tokens` at `5` first, then test `3`, `5`, `7`.
 - Keep draft cache enabled after correctness is verified.
-- For `--sglang-group-draft-backend sglang`, set
-  `--sglang-group-max-context-tokens` during early tests, for example `4096` or
-  `8192`, so the scratch draft prefill cost does not dominate long generations.
+- For `--sglang-group-draft-backend sglang`, keep
+  `--sglang-group-max-context-tokens` during early high-concurrency tests, for
+  example `4096` or `8192`, so cross-request rebuilds do not dominate long
+  generations.
 
 ## Constraints
 

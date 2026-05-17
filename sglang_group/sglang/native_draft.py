@@ -47,22 +47,115 @@ class _ScratchTreeCache(SimpleNamespace):
 
 
 @dataclass
+class _NativeDraftSnapshot:
+    next_token_logits: object
+    batch_attrs: dict[str, object]
+    req_attrs: list[tuple[object, dict[str, object]]]
+    allocator_state: object
+
+
+@dataclass
 class SGLangNativeDraftSession:
     backend: "SGLangNativeDraftBackend"
     batch: object
     next_token_logits: object
+    rid: str
+    accepted_input_ids: tuple[int, ...]
+    _snapshot: _NativeDraftSnapshot | None = None
 
     def decode(self, token_id: int) -> object:
         self.next_token_logits = self.backend.decode(self, token_id)
         return self.next_token_logits
 
+    def commit_tokens(self, token_ids: Sequence[int]) -> None:
+        suffix = tuple(int(token_id) for token_id in token_ids)
+        for token_id in suffix:
+            self.decode(token_id)
+        self.accepted_input_ids = self.accepted_input_ids + suffix
+
+    def begin_speculative(self) -> "SGLangNativeDraftSession":
+        if self._snapshot is not None:
+            raise RuntimeError("SGLang-native draft session already has an active snapshot.")
+        self._snapshot = self._take_snapshot()
+        return self
+
+    def rollback_speculative(self) -> None:
+        if self._snapshot is None:
+            return
+        snapshot = self._snapshot
+        self._snapshot = None
+
+        allocator = self.backend.model_runner.token_to_kv_pool_allocator
+        restore_state = getattr(allocator, "restore_state", None)
+        if not callable(restore_state):
+            raise RuntimeError(
+                "SGLang-native draft allocator cannot restore speculative state."
+            )
+        restore_state(snapshot.allocator_state)
+
+        for name, value in snapshot.batch_attrs.items():
+            setattr(self.batch, name, _clone_for_restore(value))
+        for req, attrs in snapshot.req_attrs:
+            for name, value in attrs.items():
+                setattr(req, name, _clone_for_restore(value))
+        self.next_token_logits = _clone_for_restore(snapshot.next_token_logits)
+
+    def _take_snapshot(self) -> _NativeDraftSnapshot:
+        allocator = self.backend.model_runner.token_to_kv_pool_allocator
+        backup_state = getattr(allocator, "backup_state", None)
+        if not callable(backup_state):
+            raise RuntimeError(
+                "SGLang-native draft allocator cannot snapshot speculative state."
+            )
+
+        batch_attr_names = (
+            "input_ids",
+            "output_ids",
+            "out_cache_loc",
+            "seq_lens",
+            "seq_lens_cpu",
+            "seq_lens_sum",
+            "orig_seq_lens",
+        )
+        batch_attrs = {
+            name: _clone_for_snapshot(getattr(self.batch, name))
+            for name in batch_attr_names
+            if hasattr(self.batch, name)
+        }
+        req_attr_names = (
+            "kv_committed_len",
+            "kv_allocated_len",
+            "kv_committed_freed",
+            "kv_overallocated_freed",
+            "decode_batch_idx",
+            "extend_batch_idx",
+            "output_ids",
+            "fill_ids",
+        )
+        req_attrs: list[tuple[object, dict[str, object]]] = []
+        for req in getattr(self.batch, "reqs", []) or []:
+            attrs = {
+                name: _clone_for_snapshot(getattr(req, name))
+                for name in req_attr_names
+                if hasattr(req, name)
+            }
+            req_attrs.append((req, attrs))
+
+        return _NativeDraftSnapshot(
+            next_token_logits=_clone_for_snapshot(self.next_token_logits),
+            batch_attrs=batch_attrs,
+            req_attrs=req_attrs,
+            allocator_state=backup_state(),
+        )
+
 
 class SGLangNativeDraftBackend:
     """Run the draft model through SGLang 0.5.9's ModelRunner.
 
-    The backend uses a single-request scratch batch per proposal. It clears the
-    draft runner memory pools before each prefill, then decodes proposed draft
-    tokens incrementally inside that scratch batch.
+    The backend keeps one accepted-context draft batch and snapshots allocator
+    state before speculative decoding. Rejected speculative tokens are rolled
+    back while accepted context can be extended incrementally on the next
+    proposal.
     """
 
     def __init__(
@@ -117,6 +210,9 @@ class SGLangNativeDraftBackend:
         )
         self.model_runner = self._load_model_runner()
         self.device = self.model_runner.device
+        self._cached_session: SGLangNativeDraftSession | None = None
+        self._cached_rid: str | None = None
+        self._cached_input_ids: tuple[int, ...] = ()
 
         logger.info(
             "Initialized SGLang-native draft backend: draft=%s, device=%s, "
@@ -206,24 +302,85 @@ class SGLangNativeDraftBackend:
         )
 
     def clear(self) -> None:
+        self._drop_cached_session()
+        self._clear_pools()
+
+    def evict(self, rids: Sequence[str]) -> bool:
+        rid_set = {str(rid) for rid in rids}
+        if self._cached_rid is not None and self._cached_rid in rid_set:
+            self.clear()
+            return True
+        return False
+
+    def cache_size(self) -> int:
+        return 1 if self._cached_session is not None else 0
+
+    def _drop_cached_session(self) -> None:
+        self._cached_session = None
+        self._cached_rid = None
+        self._cached_input_ids = ()
+
+    def _clear_pools(self) -> None:
         self.model_runner.req_to_token_pool.clear()
         self.model_runner.token_to_kv_pool_allocator.clear()
+
+    def ensure_session(
+        self,
+        input_ids: Sequence[int],
+        *,
+        rid: str,
+    ) -> tuple[SGLangNativeDraftSession, str]:
+        ids = tuple(int(token_id) for token_id in input_ids)
+        if not ids:
+            raise ValueError("SGLang-native draft context must contain at least one token.")
+
+        rid = str(rid)
+        if self.config.enable_draft_cache and self._cached_session is not None:
+            if self._cached_rid == rid and self._cached_input_ids == ids:
+                return self._cached_session, "sglang-hit"
+            if (
+                self._cached_rid == rid
+                and len(ids) > len(self._cached_input_ids)
+                and ids[: len(self._cached_input_ids)] == self._cached_input_ids
+            ):
+                suffix = ids[len(self._cached_input_ids) :]
+                try:
+                    self._cached_session.commit_tokens(suffix)
+                except Exception:
+                    self.clear()
+                    raise
+                self._cached_input_ids = ids
+                return self._cached_session, "sglang-extend"
+
+        session = self.prefill(ids, rid=rid)
+        if self.config.enable_draft_cache:
+            self._cached_session = session
+            self._cached_rid = rid
+            self._cached_input_ids = ids
+        else:
+            self._cached_session = None
+            self._cached_rid = None
+            self._cached_input_ids = ()
+        return session, "sglang-rebuild"
 
     def prefill(self, input_ids: Sequence[int], *, rid: str) -> SGLangNativeDraftSession:
         import torch
 
-        ids = [int(token_id) for token_id in input_ids]
+        ids = tuple(int(token_id) for token_id in input_ids)
         if not ids:
             raise ValueError("SGLang-native draft context must contain at least one token.")
 
         with torch.no_grad():
-            self.clear()
-            batch = self._make_extend_batch(ids, rid=rid)
+            self._drop_cached_session()
+            self._clear_pools()
+            batch = self._make_extend_batch(list(ids), rid=rid)
             logits = self._forward_batch(batch)
         return SGLangNativeDraftSession(
             backend=self,
             batch=batch,
             next_token_logits=logits,
+            rid=str(rid),
+            accepted_input_ids=ids,
         )
 
     def decode(self, session: SGLangNativeDraftSession, token_id: int) -> object:
@@ -327,3 +484,23 @@ def _ceil_to_page(value: int, page_size: int) -> int:
     if page_size <= 1:
         return value
     return ((value + page_size - 1) // page_size) * page_size
+
+
+def _clone_for_snapshot(value):
+    clone = getattr(value, "clone", None)
+    if callable(clone):
+        return clone()
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, tuple):
+        return tuple(_clone_for_snapshot(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _clone_for_snapshot(item) for key, item in value.items()}
+    try:
+        return copy.copy(value)
+    except Exception:
+        return value
+
+
+def _clone_for_restore(value):
+    return _clone_for_snapshot(value)
