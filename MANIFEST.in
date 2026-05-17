@@ -1,3 +1,3 @@
-include README.md LICENSE
+include README.md README_EN.md LICENSE
 recursive-include docs *.md
 recursive-include configs *.json
