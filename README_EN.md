@@ -2,7 +2,7 @@
 
 [中文](README.md) | English
 
-`sglang-group` is a **SGLang 0.5.9** integration for heterogeneous-vocabulary speculative decoding. It combines the first paper's SLEM/TLI paths and TokenTiming's ITL path in one SGLang worker, so **both the target model and the draft model can run through SGLang** while using different tokenizers.
+`sglang-group` is a **SGLang 0.5.9** integration for heterogeneous-vocabulary speculative decoding. It supports SLEM, TLI, and TokenTiming-style ITL proposal methods, so **both the target model and the draft model can run through SGLang** while using different tokenizers.
 
 In normal deployments, use the **SGLang-native draft backend**:
 

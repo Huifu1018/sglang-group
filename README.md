@@ -2,7 +2,7 @@
 
 中文 | [English](README_EN.md)
 
-`sglang-group` 是面向 **SGLang 0.5.9** 的异构词表 speculative decoding 集成。它把第一篇论文的 SLEM/TLI 路线和 TokenTiming 的 ITL 路线集成到同一个 SGLang worker 里，让 **target 模型和 draft 模型都可以由 SGLang 执行**，同时允许两者使用不同 tokenizer。
+`sglang-group` 是面向 **SGLang 0.5.9** 的异构词表 speculative decoding 集成。它支持 SLEM、TLI 和 TokenTiming-style ITL 三类异构词表 proposal 方法，让 **target 模型和 draft 模型都可以由 SGLang 执行**，同时允许两者使用不同 tokenizer。
 
 普通情况下请使用 **SGLang-native draft backend**：
 

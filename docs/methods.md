@@ -22,7 +22,7 @@ benchmarks.
 
 ## `itl-base-slem`
 
-First-paper SLEM/UAG-style route:
+SLEM/UAG-style string re-tokenization route:
 
 ```text
 target ids -> target text
@@ -39,7 +39,7 @@ This method is greedy-only and is the default `auto` route for
 
 ## `itl-base-tli`
 
-First-paper TLI route:
+TLI shared-token route:
 
 ```text
 assistant vocab token string == target vocab token string
