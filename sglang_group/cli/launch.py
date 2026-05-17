@@ -23,9 +23,13 @@ GROUP_VALUE_FLAGS = {
     "--sglang-group-auto-mid-sampling-method": "SGLANG_GROUP_AUTO_MID_SAMPLING_METHOD",
     "--sglang-group-auto-high-sampling-method": "SGLANG_GROUP_AUTO_HIGH_SAMPLING_METHOD",
     "--sglang-group-auto-high-temp-threshold": "SGLANG_GROUP_AUTO_HIGH_TEMP_THRESHOLD",
+    "--sglang-group-draft-backend": "SGLANG_GROUP_DRAFT_BACKEND",
     "--sglang-group-draft-device": "SGLANG_GROUP_DRAFT_DEVICE",
     "--sglang-group-draft-device-map": "SGLANG_GROUP_DRAFT_DEVICE_MAP",
     "--sglang-group-draft-dtype": "SGLANG_GROUP_DRAFT_DTYPE",
+    "--sglang-group-native-draft-quantization": "SGLANG_GROUP_NATIVE_DRAFT_QUANTIZATION",
+    "--sglang-group-native-draft-cache-tokens": "SGLANG_GROUP_NATIVE_DRAFT_CACHE_TOKENS",
+    "--sglang-group-native-draft-max-requests": "SGLANG_GROUP_NATIVE_DRAFT_MAX_REQUESTS",
     "--sglang-group-max-draft-tokens": "SGLANG_GROUP_MAX_DRAFT_TOKENS",
     "--sglang-group-max-context-tokens": "SGLANG_GROUP_MAX_CONTEXT_TOKENS",
     "--sglang-group-assistant-lookbehind": "SGLANG_GROUP_ASSISTANT_LOOKBEHIND",
@@ -133,6 +137,23 @@ def main(argv: list[str] | None = None) -> None:
         parser.add_argument(
             "--sglang-group-auto-high-temp-threshold",
             help="Temperature at or above which auto selects the high-temp method.",
+        )
+        parser.add_argument(
+            "--sglang-group-draft-backend",
+            choices=["transformers", "sglang"],
+            help="Draft execution backend. Default: transformers.",
+        )
+        parser.add_argument(
+            "--sglang-group-native-draft-quantization",
+            help="Optional SGLang quantization override for backend=sglang.",
+        )
+        parser.add_argument(
+            "--sglang-group-native-draft-cache-tokens",
+            help="Optional draft KV pool token cap for backend=sglang.",
+        )
+        parser.add_argument(
+            "--sglang-group-native-draft-max-requests",
+            help="Draft request pool size for backend=sglang. Default: 1.",
         )
         parser.add_argument("sglang_args", nargs=argparse.REMAINDER)
         parser.parse_args(argv)

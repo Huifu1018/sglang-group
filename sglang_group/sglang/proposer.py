@@ -91,33 +91,41 @@ class HeterogeneousDraftProposer:
         target_vocab_size: int,
         config: GroupSGLangConfig,
         trust_remote_code: bool,
+        native_backend: object | None = None,
     ) -> None:
         import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
 
         self.config = config
         self.target_tokenizer = target_tokenizer
         self.target_vocab_size = int(target_vocab_size)
-        self.draft_tokenizer = AutoTokenizer.from_pretrained(
-            draft_model_path,
-            trust_remote_code=trust_remote_code,
-        )
+        self.native_backend = native_backend
 
-        model_kwargs: dict[str, object] = {"trust_remote_code": trust_remote_code}
-        if config.draft_dtype != "auto":
-            model_kwargs["torch_dtype"] = _torch_dtype(torch, config.draft_dtype)
+        if self.native_backend is None:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+
+            self.draft_tokenizer = AutoTokenizer.from_pretrained(
+                draft_model_path,
+                trust_remote_code=trust_remote_code,
+            )
+
+            model_kwargs: dict[str, object] = {"trust_remote_code": trust_remote_code}
+            if config.draft_dtype != "auto":
+                model_kwargs["torch_dtype"] = _torch_dtype(torch, config.draft_dtype)
+            else:
+                model_kwargs["torch_dtype"] = "auto"
+            if config.draft_device_map:
+                model_kwargs["device_map"] = config.draft_device_map
+
+            self.draft_model = AutoModelForCausalLM.from_pretrained(
+                draft_model_path,
+                **model_kwargs,
+            )
+            if not config.draft_device_map and config.draft_device:
+                self.draft_model.to(config.draft_device)
+            self.draft_model.eval()
         else:
-            model_kwargs["torch_dtype"] = "auto"
-        if config.draft_device_map:
-            model_kwargs["device_map"] = config.draft_device_map
-
-        self.draft_model = AutoModelForCausalLM.from_pretrained(
-            draft_model_path,
-            **model_kwargs,
-        )
-        if not config.draft_device_map and config.draft_device:
-            self.draft_model.to(config.draft_device)
-        self.draft_model.eval()
+            self.draft_tokenizer = self.native_backend.tokenizer
+            self.draft_model = None
 
         self.intersection: VocabIntersection | None = None
         self._valid_assistant_ids = None
@@ -186,6 +194,8 @@ class HeterogeneousDraftProposer:
         evicted = len(self._states)
         self._states.clear()
         self.stats.cache_evictions += evicted
+        if self.native_backend is not None:
+            self.native_backend.clear()
 
     def cache_size(self) -> int:
         return len(self._states)
@@ -447,6 +457,20 @@ class HeterogeneousDraftProposer:
         if not context_ids:
             raise ValueError("draft context must contain at least one token.")
 
+        if self.native_backend is not None:
+            session = self.native_backend.prefill(context_ids, rid=rid)
+            self.stats.cache_rebuilds += 1
+            return (
+                DraftRequestState(
+                    rid=rid,
+                    text=current_text,
+                    input_ids=context_ids,
+                    past_key_values=session,
+                    next_token_logits=session.next_token_logits,
+                ),
+                "sglang-rebuild",
+            )
+
         cached = self._states.get(rid) if self.config.enable_draft_cache else None
         if cached is not None and cached.input_ids == context_ids:
             self._states.move_to_end(rid)
@@ -522,6 +546,12 @@ class HeterogeneousDraftProposer:
     ):
         import torch
 
+        if self.native_backend is not None:
+            decode = getattr(past_key_values, "decode", None)
+            if not callable(decode):
+                raise ValueError("SGLang-native draft session is missing decode().")
+            return decode(token_id), past_key_values
+
         if past_key_values is None:
             input_tensor = torch.tensor(
                 [list(full_ids)],
@@ -549,6 +579,8 @@ class HeterogeneousDraftProposer:
         return outputs.logits[:, -1, :], getattr(outputs, "past_key_values", None)
 
     def _store_state(self, state: DraftRequestState) -> None:
+        if self.native_backend is not None:
+            return
         if not self.config.enable_draft_cache:
             return
         self._states[state.rid] = state
@@ -568,6 +600,8 @@ class HeterogeneousDraftProposer:
         return token_ids
 
     def _input_device(self):
+        if self.native_backend is not None:
+            return self.native_backend.device
         try:
             return self.draft_model.device
         except AttributeError:
@@ -576,6 +610,8 @@ class HeterogeneousDraftProposer:
     def _fork_past_key_values(self, past_key_values):
         if past_key_values is None:
             return None
+        if self.native_backend is not None:
+            return past_key_values
         if not self.config.clone_draft_cache:
             return past_key_values
         return _clone_cache(past_key_values)

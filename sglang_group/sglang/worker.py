@@ -140,19 +140,39 @@ class SGLangGroupWorker:
         if self.config.disable_cuda_graph and hasattr(server_args, "disable_cuda_graph"):
             server_args.disable_cuda_graph = True
 
+        native_backend = None
+        if self.config.draft_backend == "sglang":
+            from .native_draft import SGLangNativeDraftBackend
+
+            native_backend = SGLangNativeDraftBackend(
+                server_args=server_args,
+                gpu_id=gpu_id,
+                tp_rank=tp_rank,
+                dp_rank=dp_rank,
+                moe_ep_rank=moe_ep_rank,
+                attn_cp_rank=attn_cp_rank,
+                moe_dp_rank=moe_dp_rank,
+                nccl_port=nccl_port,
+                config=self.config,
+                trust_remote_code=bool(server_args.trust_remote_code),
+            )
+
         self.proposer = HeterogeneousDraftProposer(
             draft_model_path=server_args.speculative_draft_model_path,
             target_tokenizer=target_worker.tokenizer,
             target_vocab_size=self._target_vocab_size(target_worker),
             config=self.config,
             trust_remote_code=bool(server_args.trust_remote_code),
+            native_backend=native_backend,
         )
         self.stats = SGLangGroupWorkerStats()
         self._last_metrics_log_time = monotonic()
         logger.info(
-            "Initialized SGLANG_GROUP worker: draft=%s, method=%s, max_draft_tokens=%s",
+            "Initialized SGLANG_GROUP worker: draft=%s, method=%s, draft_backend=%s, "
+            "max_draft_tokens=%s",
             server_args.speculative_draft_model_path,
             self.config.method,
+            self.config.draft_backend,
             self.max_draft_token_num,
         )
 

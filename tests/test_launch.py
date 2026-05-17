@@ -25,6 +25,12 @@ class LaunchTests(unittest.TestCase):
             "--sglang-group-method",
             "itl",
             "--sglang-group-auto-high-temp-threshold=0.95",
+            "--sglang-group-draft-backend",
+            "sglang",
+            "--sglang-group-native-draft-quantization=awq",
+            "--sglang-group-native-draft-cache-tokens",
+            "8192",
+            "--sglang-group-native-draft-max-requests=2",
             "--no-sglang-group-draft-cache",
         ]
 
@@ -33,6 +39,10 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(remaining, ["--model-path", "target"])
         self.assertEqual(environ["SGLANG_GROUP_METHOD"], "itl")
         self.assertEqual(environ["SGLANG_GROUP_AUTO_HIGH_TEMP_THRESHOLD"], "0.95")
+        self.assertEqual(environ["SGLANG_GROUP_DRAFT_BACKEND"], "sglang")
+        self.assertEqual(environ["SGLANG_GROUP_NATIVE_DRAFT_QUANTIZATION"], "awq")
+        self.assertEqual(environ["SGLANG_GROUP_NATIVE_DRAFT_CACHE_TOKENS"], "8192")
+        self.assertEqual(environ["SGLANG_GROUP_NATIVE_DRAFT_MAX_REQUESTS"], "2")
         self.assertEqual(environ["SGLANG_GROUP_ENABLE_DRAFT_CACHE"], "false")
 
     def test_adds_legacy_ngram_flags(self):

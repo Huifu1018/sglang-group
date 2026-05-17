@@ -59,6 +59,16 @@ GROUP_METHOD_ALIASES = {
     "itl_base_tli": "itl-base-tli",
     "itl-base-tli": "itl-base-tli",
 }
+DRAFT_BACKENDS = {"transformers", "sglang"}
+DRAFT_BACKEND_ALIASES = {
+    "hf": "transformers",
+    "huggingface": "transformers",
+    "transformers": "transformers",
+    "native": "sglang",
+    "sglang": "sglang",
+    "sglang-native": "sglang",
+    "srt": "sglang",
+}
 
 
 def normalize_group_method(value: str, *, allow_auto: bool = False) -> str:
@@ -71,6 +81,16 @@ def normalize_group_method(value: str, *, allow_auto: bool = False) -> str:
         allowed.extend(sorted(GROUP_METHODS))
         raise ValueError(f"method must be one of: {', '.join(allowed)}.")
     return method
+
+
+def normalize_draft_backend(value: str) -> str:
+    backend = value.strip().lower().replace("_", "-")
+    backend = DRAFT_BACKEND_ALIASES.get(backend, backend)
+    if backend not in DRAFT_BACKENDS:
+        raise ValueError(
+            "draft backend must be one of: " + ", ".join(sorted(DRAFT_BACKENDS)) + "."
+        )
+    return backend
 
 
 @dataclass(frozen=True)
@@ -87,9 +107,13 @@ class GroupSGLangConfig:
     auto_mid_sampling_method: str = "itl-base-tli"
     auto_high_sampling_method: str = "itl"
     auto_high_temp_threshold: float = 0.9
+    draft_backend: str = "transformers"
     draft_device: str | None = None
     draft_device_map: str | None = None
     draft_dtype: str = "auto"
+    native_draft_quantization: str | None = None
+    native_draft_cache_tokens: int | None = None
+    native_draft_max_requests: int = 1
     dtw_window: int | None = 8
     max_draft_tokens: int | None = None
     max_context_tokens: int | None = None
@@ -135,9 +159,23 @@ class GroupSGLangConfig:
             auto_high_temp_threshold=(
                 _env_float("SGLANG_GROUP_AUTO_HIGH_TEMP_THRESHOLD", 0.9) or 0.9
             ),
+            draft_backend=normalize_draft_backend(
+                _env_value("SGLANG_GROUP_DRAFT_BACKEND", default="transformers")
+                or "transformers"
+            ),
             draft_device=os.getenv("SGLANG_GROUP_DRAFT_DEVICE", default_draft_device),
             draft_device_map=os.getenv("SGLANG_GROUP_DRAFT_DEVICE_MAP") or None,
             draft_dtype=os.getenv("SGLANG_GROUP_DRAFT_DTYPE", "auto"),
+            native_draft_quantization=os.getenv(
+                "SGLANG_GROUP_NATIVE_DRAFT_QUANTIZATION"
+            )
+            or None,
+            native_draft_cache_tokens=_env_int(
+                "SGLANG_GROUP_NATIVE_DRAFT_CACHE_TOKENS", None
+            ),
+            native_draft_max_requests=(
+                _env_int("SGLANG_GROUP_NATIVE_DRAFT_MAX_REQUESTS", 1) or 1
+            ),
             dtw_window=_env_int("SGLANG_GROUP_DTW_WINDOW", 8),
             max_draft_tokens=_env_int("SGLANG_GROUP_MAX_DRAFT_TOKENS", None),
             max_context_tokens=_env_int("SGLANG_GROUP_MAX_CONTEXT_TOKENS", None),

@@ -11,8 +11,8 @@ speculative decoding. It combines:
 - `auto`: choose one of the above methods from the request sampling temperature.
 
 The target model and draft model can use different tokenizers. The draft model
-is a normal Hugging Face causal LM; no target-specific MTP/EAGLE/P-EAGLE model
-is required.
+can be a normal causal LM; no target-specific MTP/EAGLE/P-EAGLE model is
+required.
 
 ## Install
 
@@ -61,6 +61,7 @@ sglang-group-launch \
   --speculative-num-steps 4 \
   --speculative-num-draft-tokens 5 \
   --sglang-group-method auto \
+  --sglang-group-draft-backend transformers \
   --sglang-group-draft-device cuda:0
 ```
 
@@ -120,6 +121,56 @@ On SGLang 0.5.9, auto selection is batch-level because the verify input class is
 chosen once per decode batch. If a batch mixes temperatures, the highest
 temperature in that batch drives the auto choice.
 
+## Draft Backend
+
+Default backend:
+
+```bash
+--sglang-group-draft-backend transformers
+```
+
+This is the original path: the target model is verified by SGLang, while the
+draft model is loaded with Hugging Face Transformers and uses HF `past_key_values`.
+
+SGLang-native draft backend:
+
+```bash
+--sglang-group-draft-backend sglang
+```
+
+This loads the draft model through SGLang 0.5.9's low-level `ModelRunner` and
+runs draft prefill/decode with SGLang KV pools and model kernels. It supports
+`itl`, `itl-base-slem`, `itl-base-tli`, and `auto`.
+
+Use this when you want both target and draft execution to stay inside SGLang.
+The native backend does not use `SGLANG_GROUP_DRAFT_DEVICE_MAP`; place it with
+normal SGLang process placement such as `CUDA_VISIBLE_DEVICES`, `--tp`, and
+container GPU assignment.
+
+It also does not inherit the target model quantization. This matters when the
+target is NVFP4/AWQ but the draft is a normal BF16/FP16 model such as
+`Qwen/Qwen2.5-1.5B-Instruct`. If the draft checkpoint declares quantization in
+its config, SGLang can detect it; otherwise force one only when needed:
+
+```bash
+--sglang-group-native-draft-quantization awq
+```
+
+The native backend defaults to a single scratch draft request. If
+`--sglang-group-max-context-tokens` is set, it derives a small draft KV pool from
+that context cap. You can override it directly:
+
+```bash
+--sglang-group-native-draft-cache-tokens 8192 \
+--sglang-group-native-draft-max-requests 1
+```
+
+Important: for heterogeneous tokenizers, rejected speculative draft tokens
+cannot be committed into a persistent draft KV cache safely without a deeper
+SGLang scheduler state fork. The SGLang-native backend therefore uses a
+scratch-local draft batch per proposal. It is correct and engine-native, but
+long-context speed depends heavily on context truncation and draft size.
+
 ## Force-Method Examples
 
 Greedy, first-paper SLEM:
@@ -173,10 +224,14 @@ to SGLang.
 | --- | --- | --- | --- |
 | `--sglang-group-method` | `SGLANG_GROUP_METHOD` | `auto` | `auto`, `itl`, `itl-base-slem`, or `itl-base-tli`. |
 | `--sglang-group-auto-high-temp-threshold` | `SGLANG_GROUP_AUTO_HIGH_TEMP_THRESHOLD` | `0.9` | Temperature threshold for high-temp auto routing. |
+| `--sglang-group-draft-backend` | `SGLANG_GROUP_DRAFT_BACKEND` | `transformers` | `transformers` or `sglang`. |
 | `--sglang-group-draft-device` | `SGLANG_GROUP_DRAFT_DEVICE` | target CUDA device | Device for the Transformers draft model. |
 | `--sglang-group-draft-device-map` | `SGLANG_GROUP_DRAFT_DEVICE_MAP` | unset | Passed to HF `from_pretrained(..., device_map=...)`. |
 | `--sglang-group-draft-dtype` | `SGLANG_GROUP_DRAFT_DTYPE` | `auto` | `auto`, `fp16`, `bf16`, or `fp32`. |
-| `--sglang-group-max-draft-tokens` | `SGLANG_GROUP_MAX_DRAFT_TOKENS` | derived | Max HF draft autoregressive steps per proposal. |
+| `--sglang-group-native-draft-quantization` | `SGLANG_GROUP_NATIVE_DRAFT_QUANTIZATION` | unset | Optional quantization override for backend `sglang`. |
+| `--sglang-group-native-draft-cache-tokens` | `SGLANG_GROUP_NATIVE_DRAFT_CACHE_TOKENS` | derived | Draft KV pool tokens for backend `sglang`. |
+| `--sglang-group-native-draft-max-requests` | `SGLANG_GROUP_NATIVE_DRAFT_MAX_REQUESTS` | `1` | Draft request pool size for backend `sglang`. |
+| `--sglang-group-max-draft-tokens` | `SGLANG_GROUP_MAX_DRAFT_TOKENS` | derived | Max draft autoregressive steps per proposal. |
 | `--sglang-group-max-context-tokens` | `SGLANG_GROUP_MAX_CONTEXT_TOKENS` | unset | Truncate draft-side context before proposal. |
 | `--sglang-group-dtw-window` | `SGLANG_GROUP_DTW_WINDOW` | `8` | DTW window for `itl` alignment diagnostics. |
 | `--sglang-group-assistant-lookbehind` | `SGLANG_GROUP_ASSISTANT_LOOKBEHIND` | `10` | Assistant-side SLEM lookbehind. |
@@ -196,6 +251,9 @@ For your current MiniMax-M2.7-AWQ/NVFP4 measurements:
 - `temperature=1`: start with `itl`.
 - Keep `--speculative-num-draft-tokens` at `5` first, then test `3`, `5`, `7`.
 - Keep draft cache enabled after correctness is verified.
+- For `--sglang-group-draft-backend sglang`, set
+  `--sglang-group-max-context-tokens` during early tests, for example `4096` or
+  `8192`, so the scratch draft prefill cost does not dominate long generations.
 
 ## Constraints
 
@@ -206,6 +264,7 @@ For your current MiniMax-M2.7-AWQ/NVFP4 measurements:
 - Uses one linear candidate chain per request.
 - Multimodal requests fall back to target-only verification for that request.
 - `itl-base-slem` is greedy only.
+- `--sglang-group-draft-backend sglang` does not support HF `device_map`.
 
 ## Development Checks
 
