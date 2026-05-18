@@ -50,7 +50,7 @@ python -m unittest discover -s tests -p 'test_*.py'
 
 ## 生产推荐用法：Target + Draft 都走 SGLang
 
-请使用 `sglang-group-launch` 启动，不要直接使用 `python -m sglang.launch_server`。SGLang 0.5.9 的参数解析阶段不接受自定义 speculative algorithm 名称，`sglang-group-launch` 会把 `SGLANG_GROUP` 改写到 SGLang 内置解析路径，并在进程内注册 `sglang-group` worker。
+请使用 `sglang-group-launch` 启动，不要直接使用 `python -m sglang.launch_server`。SGLang 0.5.9 的参数解析阶段不接受自定义 speculative algorithm 名称，`sglang-group-launch` 会把 `SGLANG_GROUP` 改写到 SGLang 内置 `NGRAM` 解析路径，但会在父进程和 scheduler 子进程里安装 patch，把真正创建的 speculative worker 路由到 `SGLangGroupWorker`。
 
 下面是推荐的标准启动方式：
 
@@ -76,6 +76,8 @@ CUDA_VISIBLE_DEVICES=0 sglang-group-launch \
 - `--sglang-group-draft-backend sglang` 是关键参数，表示 draft 不走 Transformers，而是走 SGLang。
 - `--sglang-group-method auto` 会根据请求温度自动选择 `itl-base-slem`、`itl-base-tli` 或 `itl`。
 - `--sglang-group-max-context-tokens 8192` 用于限制 draft-side context，避免长上下文下 draft cache rebuild 成本过高。
+
+日志里看到 SGLang 参数层面的 `NGRAM` 是正常的兼容表现；真正生效时还应该看到 `Initialized SGLANG_GROUP worker` 和后续 `SGLANG_GROUP metrics` 日志。如果只看到原生 NGRAM 行为，说明 scheduler 子进程没有加载 `sglang-group` 的 bootstrap patch。
 
 启动前可以检查环境：
 

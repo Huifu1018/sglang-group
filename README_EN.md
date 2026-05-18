@@ -50,7 +50,7 @@ python -m unittest discover -s tests -p 'test_*.py'
 
 ## Recommended Production Path: Target + Draft Both Run Through SGLang
 
-Use `sglang-group-launch`, not `python -m sglang.launch_server` directly. SGLang 0.5.9 does not accept custom speculative algorithm names during argument parsing, so `sglang-group-launch` rewrites `SGLANG_GROUP` to a built-in parser path and registers the `sglang-group` worker in-process.
+Use `sglang-group-launch`, not `python -m sglang.launch_server` directly. SGLang 0.5.9 does not accept custom speculative algorithm names during argument parsing, so `sglang-group-launch` rewrites `SGLANG_GROUP` to the built-in `NGRAM` parser path, then installs patches in both the parent process and scheduler child processes so the actual speculative worker is routed to `SGLangGroupWorker`.
 
 Recommended standard command:
 
@@ -76,6 +76,8 @@ In this command:
 - `--sglang-group-draft-backend sglang` is the key flag: the draft does not run through Transformers.
 - `--sglang-group-method auto` selects `itl-base-slem`, `itl-base-tli`, or `itl` from request temperature.
 - `--sglang-group-max-context-tokens 8192` caps draft-side context to reduce long-context rebuild cost.
+
+Seeing `NGRAM` in SGLang's argument-level logs is expected in legacy compatibility mode. When the integration is active, logs should also include `Initialized SGLANG_GROUP worker` and later `SGLANG_GROUP metrics`. If behavior looks like native NGRAM only, the scheduler child process did not load the `sglang-group` bootstrap patch.
 
 Check the environment before launch:
 

@@ -104,7 +104,7 @@ def _accept_lens_for_result(verify_input: object):
 
 
 class SGLangGroupWorker:
-    """SGLang worker integrating TokenTiming ITL and first-paper SLEM/TLI.
+    """SGLang worker integrating ITL, SLEM, and TLI proposal methods.
 
     `auto` mode is batch-level on SGLang 0.5.9: greedy batches use
     `itl-base-slem`, mid-temperature sampling uses `itl-base-tli`, and

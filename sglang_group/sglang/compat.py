@@ -3,10 +3,47 @@
 from __future__ import annotations
 
 import os
+from collections.abc import MutableMapping
+from pathlib import Path
 from typing import Callable
 
 
 LEGACY_PATCH_ENV = "SGLANG_GROUP_LEGACY_NGRAM_PATCH"
+CHILD_BOOTSTRAP_ENV = "SGLANG_GROUP_CHILD_BOOTSTRAP"
+
+
+def child_bootstrap_dir() -> Path:
+    return Path(__file__).resolve().parent.parent / "_bootstrap"
+
+
+def install_child_process_patch_hook(
+    environ: MutableMapping[str, str] | None = None,
+) -> Path:
+    """Make spawned SGLang scheduler processes re-apply the legacy patch.
+
+    SGLang 0.5.9 may create scheduler/model worker processes with Python spawn
+    semantics. In that case, monkey patches applied in the launcher process are
+    not inherited. We prepend a tiny sitecustomize directory to PYTHONPATH so
+    child interpreters re-run patch_legacy_ngram_worker() at startup.
+    """
+
+    environ = os.environ if environ is None else environ
+    bootstrap_dir = child_bootstrap_dir()
+    sitecustomize = bootstrap_dir / "sitecustomize.py"
+    if not sitecustomize.exists():
+        raise RuntimeError(f"Missing sglang-group child bootstrap: {sitecustomize}")
+
+    entries = [
+        entry
+        for entry in environ.get("PYTHONPATH", "").split(os.pathsep)
+        if entry
+    ]
+    bootstrap_entry = str(bootstrap_dir)
+    if bootstrap_entry not in entries:
+        entries.insert(0, bootstrap_entry)
+        environ["PYTHONPATH"] = os.pathsep.join(entries)
+    environ[CHILD_BOOTSTRAP_ENV] = "1"
+    return bootstrap_dir
 
 
 def has_native_custom_spec_registry() -> bool:

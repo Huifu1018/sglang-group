@@ -11,6 +11,7 @@ from sglang_group import SGLANG_GROUP_ALGORITHM
 from sglang_group.sglang.compat import (
     LEGACY_PATCH_ENV,
     has_native_custom_spec_registry,
+    install_child_process_patch_hook,
     patch_legacy_ngram_worker,
 )
 from sglang_group.sglang.plugin import activate
@@ -162,6 +163,7 @@ def main(argv: list[str] | None = None) -> None:
     argv = _consume_group_args(argv)
     if _uses_sglang_group(argv) and not has_native_custom_spec_registry():
         os.environ[LEGACY_PATCH_ENV] = "1"
+        install_child_process_patch_hook()
         patch_legacy_ngram_worker()
         argv = _rewrite_algorithm(argv)
         argv = _ensure_legacy_ngram_flags(argv)
