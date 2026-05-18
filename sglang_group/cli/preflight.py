@@ -6,7 +6,10 @@ import argparse
 import importlib.metadata
 import json
 
-from sglang_group.sglang.compat import has_native_custom_spec_registry
+from sglang_group.sglang.compat import (
+    has_native_custom_spec_registry,
+    has_native_sglang_group_algorithm,
+)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -17,6 +20,7 @@ def main(argv: list[str] | None = None) -> None:
     result = {
         "sglang_installed": False,
         "sglang_version": None,
+        "native_sglang_group_algorithm": False,
         "native_custom_spec_registry": False,
         "legacy_ngram_patch_required": True,
         "recommended_algorithm_arg": "SGLANG_GROUP via sglang-group-launch",
@@ -28,9 +32,11 @@ def main(argv: list[str] | None = None) -> None:
         pass
 
     if result["sglang_installed"]:
+        source_integrated = has_native_sglang_group_algorithm()
         native = has_native_custom_spec_registry()
+        result["native_sglang_group_algorithm"] = source_integrated
         result["native_custom_spec_registry"] = native
-        result["legacy_ngram_patch_required"] = not native
+        result["legacy_ngram_patch_required"] = not (source_integrated or native)
 
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))

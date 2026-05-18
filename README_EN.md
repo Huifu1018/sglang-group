@@ -48,9 +48,40 @@ uv pip install -e ".[dev]"
 python -m unittest discover -s tests -p 'test_*.py'
 ```
 
+## Recommended: Install The Source-Level SGLang Integration
+
+For production, install `SGLANG_GROUP` into the SGLang 0.5.9 source in the
+current Python environment. This avoids the `NGRAM` rewrite and monkey patch
+compatibility path:
+
+```bash
+sglang-group-install-sglang-patch
+sglang-group-install-sglang-patch --check
+```
+
+The command modifies two SGLang files:
+
+- `sglang/srt/speculative/spec_info.py`
+- `sglang/srt/server_args.py`
+
+The original files are kept with a `.sglang-group.bak` suffix. After this,
+SGLang accepts `--speculative-algorithm SGLANG_GROUP` natively, and
+`sglang-group-launch` no longer rewrites it to `NGRAM` or installs scheduler
+child-process monkey patches.
+
+For a SGLang source checkout or Docker build stage, pass the root explicitly:
+
+```bash
+sglang-group-install-sglang-patch --sglang-root /path/to/sglang
+```
+
 ## Recommended Production Path: Target + Draft Both Run Through SGLang
 
-Use `sglang-group-launch`, not `python -m sglang.launch_server` directly. SGLang 0.5.9 does not accept custom speculative algorithm names during argument parsing, so `sglang-group-launch` rewrites `SGLANG_GROUP` to the built-in `NGRAM` parser path, then installs patches in both the parent process and scheduler child processes so the actual speculative worker is routed to `SGLangGroupWorker`.
+Install the source-level integration above first, then use `sglang-group-launch`.
+The launcher still consumes `--sglang-group-*` flags and exports them as
+environment variables, but once the source integration is installed it keeps
+`--speculative-algorithm SGLANG_GROUP` unchanged and does not use the `NGRAM`
+compatibility path.
 
 Recommended standard command:
 
@@ -77,7 +108,16 @@ In this command:
 - `--sglang-group-method auto` selects `itl-base-slem`, `itl-base-tli`, or `itl` from request temperature.
 - `--sglang-group-max-context-tokens 8192` caps draft-side context to reduce long-context rebuild cost.
 
-Seeing `NGRAM` in SGLang's argument-level logs is expected in legacy compatibility mode. When the integration is active, logs should also include `Initialized SGLANG_GROUP worker` and later `SGLANG_GROUP metrics`. If behavior looks like native NGRAM only, the scheduler child process did not load the `sglang-group` bootstrap patch.
+With source-level integration active, the SGLang argument-level logs should show
+`SGLANG_GROUP`. Runtime logs should also include `Initialized SGLANG_GROUP
+worker` and later `SGLANG_GROUP metrics`.
+
+If the source-level integration is not installed, `sglang-group-launch` falls
+back to the legacy compatibility mode: it rewrites `SGLANG_GROUP` to SGLang's
+built-in `NGRAM` parser path and installs parent/scheduler child-process
+patches. In that mode, seeing `NGRAM` in argument logs is expected, but you must
+still see `Initialized SGLANG_GROUP worker` to confirm it did not run as native
+NGRAM.
 
 Check the environment before launch:
 
@@ -211,13 +251,16 @@ In this mode:
 
 ## Flags
 
-`sglang-group-launch` consumes `--sglang-group-*` flags and forwards the rest to SGLang. For backward compatibility, the code-level backend default is still `transformers`; production deployments should explicitly pass `--sglang-group-draft-backend sglang`.
+`sglang-group-launch` consumes `--sglang-group-*` flags and forwards the rest to
+SGLang. The default draft backend is now `sglang`, so target and draft both run
+through SGLang. For controlled comparisons, pass
+`--sglang-group-draft-backend transformers`.
 
 | Flag | Env var | Default | Meaning |
 | --- | --- | --- | --- |
 | `--sglang-group-method` | `SGLANG_GROUP_METHOD` | `auto` | `auto`, `itl`, `itl-base-slem`, or `itl-base-tli`. |
 | `--sglang-group-auto-high-temp-threshold` | `SGLANG_GROUP_AUTO_HIGH_TEMP_THRESHOLD` | `0.9` | High-temperature routing threshold for `auto`. |
-| `--sglang-group-draft-backend` | `SGLANG_GROUP_DRAFT_BACKEND` | `transformers` | Set this explicitly to `sglang` in production so target/draft both run through SGLang; `transformers` means HF draft. |
+| `--sglang-group-draft-backend` | `SGLANG_GROUP_DRAFT_BACKEND` | `sglang` | Target/draft both run through SGLang; `transformers` means HF draft for compatibility or comparisons. |
 | `--sglang-group-draft-device` | `SGLANG_GROUP_DRAFT_DEVICE` | target CUDA device | Transformers backend only. |
 | `--sglang-group-draft-device-map` | `SGLANG_GROUP_DRAFT_DEVICE_MAP` | unset | Transformers backend only; passed to HF `from_pretrained(..., device_map=...)`. |
 | `--sglang-group-draft-dtype` | `SGLANG_GROUP_DRAFT_DTYPE` | `auto` | `auto`, `fp16`, `bf16`, or `fp32`. |

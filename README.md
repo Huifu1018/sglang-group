@@ -48,9 +48,37 @@ uv pip install -e ".[dev]"
 python -m unittest discover -s tests -p 'test_*.py'
 ```
 
+## 推荐：安装 SGLang 源码级集成
+
+为了避免 `NGRAM` rewrite 和 monkey patch，生产环境建议先把 `SGLANG_GROUP`
+安装进当前 Python 环境里的 SGLang 0.5.9 源码：
+
+```bash
+sglang-group-install-sglang-patch
+sglang-group-install-sglang-patch --check
+```
+
+这个命令会修改当前环境中的两个 SGLang 文件：
+
+- `sglang/srt/speculative/spec_info.py`
+- `sglang/srt/server_args.py`
+
+原文件会保留 `.sglang-group.bak` 备份。打完补丁后，SGLang 会原生接受
+`--speculative-algorithm SGLANG_GROUP`，`sglang-group-launch` 不再把它改写成
+`NGRAM`，也不再需要 scheduler 子进程 monkey patch。
+
+如果你使用的是 SGLang 源码目录或镜像构建阶段，可以显式指定路径：
+
+```bash
+sglang-group-install-sglang-patch --sglang-root /path/to/sglang
+```
+
 ## 生产推荐用法：Target + Draft 都走 SGLang
 
-请使用 `sglang-group-launch` 启动，不要直接使用 `python -m sglang.launch_server`。SGLang 0.5.9 的参数解析阶段不接受自定义 speculative algorithm 名称，`sglang-group-launch` 会把 `SGLANG_GROUP` 改写到 SGLang 内置 `NGRAM` 解析路径，但会在父进程和 scheduler 子进程里安装 patch，把真正创建的 speculative worker 路由到 `SGLangGroupWorker`。
+推荐先执行上一节的源码级集成，然后使用 `sglang-group-launch` 启动。这个
+launcher 仍然负责消费 `--sglang-group-*` 参数并转成环境变量，但在源码级集成
+已经安装时，会直接保留 `--speculative-algorithm SGLANG_GROUP`，不再走
+`NGRAM` 兼容路径。
 
 下面是推荐的标准启动方式：
 
@@ -77,7 +105,14 @@ CUDA_VISIBLE_DEVICES=0 sglang-group-launch \
 - `--sglang-group-method auto` 会根据请求温度自动选择 `itl-base-slem`、`itl-base-tli` 或 `itl`。
 - `--sglang-group-max-context-tokens 8192` 用于限制 draft-side context，避免长上下文下 draft cache rebuild 成本过高。
 
-日志里看到 SGLang 参数层面的 `NGRAM` 是正常的兼容表现；真正生效时还应该看到 `Initialized SGLANG_GROUP worker` 和后续 `SGLANG_GROUP metrics` 日志。如果只看到原生 NGRAM 行为，说明 scheduler 子进程没有加载 `sglang-group` 的 bootstrap patch。
+源码级集成生效后，日志中的 speculative algorithm 应该是 `SGLANG_GROUP`。
+真正生效时还应该看到 `Initialized SGLANG_GROUP worker` 和后续
+`SGLANG_GROUP metrics` 日志。
+
+如果没有安装源码级集成，`sglang-group-launch` 会自动回退到旧的兼容模式：
+把 `SGLANG_GROUP` 改写到 SGLang 内置 `NGRAM` 解析路径，并在父进程和
+scheduler 子进程里安装 patch。此时日志里看到 `NGRAM` 是兼容表现，但仍然
+必须看到 `Initialized SGLANG_GROUP worker` 才能确认没有跑成原生 NGRAM。
 
 启动前可以检查环境：
 
@@ -211,13 +246,15 @@ sglang-group-launch \
 
 ## 参数列表
 
-`sglang-group-launch` 会消费 `--sglang-group-*` 参数，其余参数继续转发给 SGLang。为了兼容早期版本，代码里的 backend 默认值仍是 `transformers`；生产使用时请显式传入 `--sglang-group-draft-backend sglang`。
+`sglang-group-launch` 会消费 `--sglang-group-*` 参数，其余参数继续转发给
+SGLang。默认 draft backend 是 `sglang`，也就是 target/draft 都走 SGLang；
+如果要做对照实验，可以显式传入 `--sglang-group-draft-backend transformers`。
 
 | 参数 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `--sglang-group-method` | `SGLANG_GROUP_METHOD` | `auto` | `auto`、`itl`、`itl-base-slem` 或 `itl-base-tli`。 |
 | `--sglang-group-auto-high-temp-threshold` | `SGLANG_GROUP_AUTO_HIGH_TEMP_THRESHOLD` | `0.9` | `auto` 高温路由阈值。 |
-| `--sglang-group-draft-backend` | `SGLANG_GROUP_DRAFT_BACKEND` | `transformers` | 生产建议显式设为 `sglang`，表示 target/draft 都走 SGLang；`transformers` 表示 draft 走 HF。 |
+| `--sglang-group-draft-backend` | `SGLANG_GROUP_DRAFT_BACKEND` | `sglang` | target/draft 都走 SGLang；`transformers` 表示 draft 走 HF，仅建议用于兼容或对照实验。 |
 | `--sglang-group-draft-device` | `SGLANG_GROUP_DRAFT_DEVICE` | target CUDA device | 仅 Transformers backend 使用。 |
 | `--sglang-group-draft-device-map` | `SGLANG_GROUP_DRAFT_DEVICE_MAP` | 未设置 | 仅 Transformers backend 使用，传给 HF `from_pretrained(..., device_map=...)`。 |
 | `--sglang-group-draft-dtype` | `SGLANG_GROUP_DRAFT_DTYPE` | `auto` | `auto`、`fp16`、`bf16` 或 `fp32`。 |

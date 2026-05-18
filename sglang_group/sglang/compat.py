@@ -39,11 +39,21 @@ def install_child_process_patch_hook(
         if entry
     ]
     bootstrap_entry = str(bootstrap_dir)
-    if bootstrap_entry not in entries:
-        entries.insert(0, bootstrap_entry)
-        environ["PYTHONPATH"] = os.pathsep.join(entries)
+    entries = [entry for entry in entries if entry != bootstrap_entry]
+    entries.insert(0, bootstrap_entry)
+    environ["PYTHONPATH"] = os.pathsep.join(entries)
     environ[CHILD_BOOTSTRAP_ENV] = "1"
     return bootstrap_dir
+
+
+def has_native_sglang_group_algorithm() -> bool:
+    """Return whether the installed SGLang source already knows SGLANG_GROUP."""
+
+    try:
+        from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+    except Exception:
+        return False
+    return "SGLANG_GROUP" in getattr(SpeculativeAlgorithm, "__members__", {})
 
 
 def has_native_custom_spec_registry() -> bool:

@@ -11,6 +11,7 @@ from sglang_group import SGLANG_GROUP_ALGORITHM
 from sglang_group.sglang.compat import (
     LEGACY_PATCH_ENV,
     has_native_custom_spec_registry,
+    has_native_sglang_group_algorithm,
     install_child_process_patch_hook,
     patch_legacy_ngram_worker,
 )
@@ -142,7 +143,7 @@ def main(argv: list[str] | None = None) -> None:
         parser.add_argument(
             "--sglang-group-draft-backend",
             choices=["transformers", "sglang"],
-            help="Draft execution backend. Default: transformers.",
+            help="Draft execution backend. Default: sglang.",
         )
         parser.add_argument(
             "--sglang-group-native-draft-quantization",
@@ -161,12 +162,17 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     argv = _consume_group_args(argv)
-    if _uses_sglang_group(argv) and not has_native_custom_spec_registry():
-        os.environ[LEGACY_PATCH_ENV] = "1"
-        install_child_process_patch_hook()
-        patch_legacy_ngram_worker()
-        argv = _rewrite_algorithm(argv)
-        argv = _ensure_legacy_ngram_flags(argv)
+    if _uses_sglang_group(argv):
+        if has_native_sglang_group_algorithm():
+            pass
+        elif not has_native_custom_spec_registry():
+            os.environ[LEGACY_PATCH_ENV] = "1"
+            install_child_process_patch_hook()
+            patch_legacy_ngram_worker()
+            argv = _rewrite_algorithm(argv)
+            argv = _ensure_legacy_ngram_flags(argv)
+        else:
+            activate()
     else:
         activate()
 
@@ -176,8 +182,12 @@ def main(argv: list[str] | None = None) -> None:
 
     server_args = prepare_server_args(argv)
     if (
-        str(getattr(server_args, "speculative_algorithm", "")).upper() == "NGRAM"
-        and os.getenv(LEGACY_PATCH_ENV) == "1"
+        str(getattr(server_args, "speculative_algorithm", "")).upper()
+        == SGLANG_GROUP_ALGORITHM
+        or (
+            str(getattr(server_args, "speculative_algorithm", "")).upper() == "NGRAM"
+            and os.getenv(LEGACY_PATCH_ENV) == "1"
+        )
     ):
         validate_server_args(server_args)
 

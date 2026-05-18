@@ -107,7 +107,7 @@ class GroupSGLangConfig:
     auto_mid_sampling_method: str = "itl-base-tli"
     auto_high_sampling_method: str = "itl"
     auto_high_temp_threshold: float = 0.9
-    draft_backend: str = "transformers"
+    draft_backend: str = "sglang"
     draft_device: str | None = None
     draft_device_map: str | None = None
     draft_dtype: str = "auto"
@@ -160,8 +160,8 @@ class GroupSGLangConfig:
                 _env_float("SGLANG_GROUP_AUTO_HIGH_TEMP_THRESHOLD", 0.9) or 0.9
             ),
             draft_backend=normalize_draft_backend(
-                _env_value("SGLANG_GROUP_DRAFT_BACKEND", default="transformers")
-                or "transformers"
+                _env_value("SGLANG_GROUP_DRAFT_BACKEND", default="sglang")
+                or "sglang"
             ),
             draft_device=os.getenv("SGLANG_GROUP_DRAFT_DEVICE", default_draft_device),
             draft_device_map=os.getenv("SGLANG_GROUP_DRAFT_DEVICE_MAP") or None,

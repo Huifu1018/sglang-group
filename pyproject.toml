@@ -47,6 +47,7 @@ sglang_group = "sglang_group.sglang.plugin:activate"
 [project.scripts]
 sglang-group-launch = "sglang_group.cli.launch:main"
 sglang-group-preflight = "sglang_group.cli.preflight:main"
+sglang-group-install-sglang-patch = "sglang_group.cli.install_sglang_patch:main"
 
 [tool.setuptools.packages.find]
 include = ["sglang_group*"]

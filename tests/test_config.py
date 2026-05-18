@@ -33,6 +33,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(normalize_draft_backend("hf"), "transformers")
         self.assertEqual(normalize_draft_backend("sglang-native"), "sglang")
 
+    def test_default_draft_backend_is_sglang(self):
+        config = GroupSGLangConfig.from_env()
+        self.assertEqual(config.draft_backend, "sglang")
+
     def test_env_validation(self):
         with patch.dict("os.environ", {"SGLANG_GROUP_METHOD": "bad"}):
             with self.assertRaises(ValueError):
