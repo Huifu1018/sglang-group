@@ -124,7 +124,9 @@ class GroupSGLangConfig:
     add_special_tokens: bool = False
     disable_cuda_graph: bool = True
     enable_draft_cache: bool = True
+    enable_proposal_cache: bool = True
     clone_draft_cache: bool = True
+    max_cached_proposals: int = 1024
     tli_min_intersection: int = 1
     metrics_log_interval: float | None = 60.0
 
@@ -189,7 +191,11 @@ class GroupSGLangConfig:
             add_special_tokens=_env_bool("SGLANG_GROUP_ADD_SPECIAL_TOKENS", False),
             disable_cuda_graph=_env_bool("SGLANG_GROUP_DISABLE_CUDA_GRAPH", True),
             enable_draft_cache=_env_bool("SGLANG_GROUP_ENABLE_DRAFT_CACHE", True),
+            enable_proposal_cache=_env_bool("SGLANG_GROUP_ENABLE_PROPOSAL_CACHE", True),
             clone_draft_cache=_env_bool("SGLANG_GROUP_CLONE_DRAFT_CACHE", True),
+            max_cached_proposals=(
+                _env_int("SGLANG_GROUP_MAX_CACHED_PROPOSALS", 1024) or 1024
+            ),
             tli_min_intersection=_env_int("SGLANG_GROUP_TLI_MIN_INTERSECTION", 1) or 1,
             metrics_log_interval=_env_float("SGLANG_GROUP_METRICS_LOG_INTERVAL", 60.0),
         )

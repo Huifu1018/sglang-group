@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import logging
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Sequence
 
 from sglang_group.alignment import dynamic_token_warping
@@ -37,6 +38,24 @@ class BaseProposal:
     cache_event: str
     draft_context_tokens: int
     alignment_cost: float | None = None
+    proposal_cache_event: str = "skip"
+
+
+@dataclass(frozen=True)
+class ProposalCacheKey:
+    rid: str
+    method: str
+    target_hash: str
+    target_len: int
+    draft_context_hash: str
+    draft_context_len: int
+    max_target_tokens: int
+    temperature: float
+    top_k: int
+    top_p: float
+    add_special_tokens: bool
+    assistant_lookbehind: int
+    target_lookbehind: int
 
 
 @dataclass
@@ -62,6 +81,11 @@ class DraftProposerStats:
     cache_evictions: int = 0
     empty_proposals: int = 0
     failed_proposals: int = 0
+    proposal_cache_hits: int = 0
+    proposal_cache_misses: int = 0
+    proposal_cache_stores: int = 0
+    proposal_cache_evictions: int = 0
+    proposal_cache_skips: int = 0
 
     def snapshot(self) -> dict[str, int]:
         return {
@@ -77,6 +101,11 @@ class DraftProposerStats:
             "cache_evictions": self.cache_evictions,
             "empty_proposals": self.empty_proposals,
             "failed_proposals": self.failed_proposals,
+            "proposal_cache_hits": self.proposal_cache_hits,
+            "proposal_cache_misses": self.proposal_cache_misses,
+            "proposal_cache_stores": self.proposal_cache_stores,
+            "proposal_cache_evictions": self.proposal_cache_evictions,
+            "proposal_cache_skips": self.proposal_cache_skips,
         }
 
 
@@ -132,6 +161,7 @@ class HeterogeneousDraftProposer:
         self._valid_target_ids = None
 
         self._states: OrderedDict[str, DraftRequestState] = OrderedDict()
+        self._proposal_cache: OrderedDict[ProposalCacheKey, BaseProposal] = OrderedDict()
         self.stats = DraftProposerStats()
 
     def propose(
@@ -150,36 +180,65 @@ class HeterogeneousDraftProposer:
             return BaseProposal(method, (), (), None, "disabled", 0)
 
         try:
+            sampling_req = sampling or SamplingRequest()
+            self._count_method_proposal(method)
+            context_ids = tuple(self._context_ids(current_text))
+            cache_key = self._proposal_cache_key(
+                rid=rid,
+                method=method,
+                current_target_ids=current_target_ids,
+                context_ids=context_ids,
+                max_target_tokens=max_target_tokens,
+                sampling=sampling_req,
+            )
+            if cache_key is not None:
+                cached_proposal = self._proposal_cache.get(cache_key)
+                if cached_proposal is not None:
+                    self._proposal_cache.move_to_end(cache_key)
+                    self.stats.proposal_cache_hits += 1
+                    proposal = replace(
+                        cached_proposal,
+                        cache_event=f"proposal-hit/{cached_proposal.cache_event}",
+                        proposal_cache_event="hit",
+                    )
+                    self._record_proposal(proposal)
+                    return proposal
+                self.stats.proposal_cache_misses += 1
+            else:
+                self.stats.proposal_cache_skips += 1
+
             if method == "itl":
                 proposal = self._propose_itl(
                     rid,
                     current_text,
+                    context_ids=context_ids,
                     max_target_tokens=max_target_tokens,
                 )
-                self.stats.itl_proposals += 1
             elif method == "itl-base-slem":
                 proposal = self._propose_slem(
                     rid,
                     current_text,
                     current_target_ids,
+                    context_ids=context_ids,
                     max_target_tokens=max_target_tokens,
                 )
-                self.stats.slem_proposals += 1
             elif method == "itl-base-tli":
                 proposal = self._propose_tli(
                     rid,
                     current_text,
+                    context_ids=context_ids,
                     max_target_tokens=max_target_tokens,
-                    sampling=sampling or SamplingRequest(),
+                    sampling=sampling_req,
                 )
-                self.stats.tli_proposals += 1
             else:
                 raise ValueError(f"Unsupported SGLANG_GROUP method: {method}")
 
-            if not proposal.target_token_ids:
-                self.stats.empty_proposals += 1
-            self.stats.proposed_target_tokens += len(proposal.target_token_ids)
-            self.stats.proposed_draft_tokens += len(proposal.draft_token_ids)
+            proposal = replace(
+                proposal,
+                proposal_cache_event="miss" if cache_key is not None else "skip",
+            )
+            self._store_proposal_cache(cache_key, proposal)
+            self._record_proposal(proposal)
             return proposal
         except Exception:
             self.stats.failed_proposals += 1
@@ -193,11 +252,21 @@ class HeterogeneousDraftProposer:
         for rid in rids:
             if self._states.pop(str(rid), None) is not None:
                 self.stats.cache_evictions += 1
+        evicted = 0
+        rid_set = {str(rid) for rid in rids}
+        for key in list(self._proposal_cache.keys()):
+            if key.rid in rid_set:
+                self._proposal_cache.pop(key, None)
+                evicted += 1
+        self.stats.proposal_cache_evictions += evicted
 
     def clear(self) -> None:
         evicted = len(self._states)
         self._states.clear()
         self.stats.cache_evictions += evicted
+        proposal_evicted = len(self._proposal_cache)
+        self._proposal_cache.clear()
+        self.stats.proposal_cache_evictions += proposal_evicted
         if self.native_backend is not None:
             self.native_backend.clear()
 
@@ -208,16 +277,20 @@ class HeterogeneousDraftProposer:
                 return int(cache_size())
         return len(self._states)
 
+    def proposal_cache_size(self) -> int:
+        return len(self._proposal_cache)
+
     def _propose_itl(
         self,
         rid: str,
         current_text: str,
         *,
+        context_ids: Sequence[int] | None = None,
         max_target_tokens: int,
     ) -> BaseProposal:
         import torch
 
-        state, cache_event = self._ensure_state(rid, current_text)
+        state, cache_event = self._ensure_state(rid, current_text, context_ids=context_ids)
         max_draft_tokens = self.config.max_draft_tokens
         if max_draft_tokens is None:
             max_draft_tokens = max(max_target_tokens * 4, max_target_tokens + 4)
@@ -271,11 +344,12 @@ class HeterogeneousDraftProposer:
         current_text: str,
         current_target_ids: Sequence[int],
         *,
+        context_ids: Sequence[int] | None = None,
         max_target_tokens: int,
     ) -> BaseProposal:
         import torch
 
-        state, cache_event = self._ensure_state(rid, current_text)
+        state, cache_event = self._ensure_state(rid, current_text, context_ids=context_ids)
         max_draft_tokens = self.config.max_draft_tokens
         if max_draft_tokens is None:
             max_draft_tokens = max(max_target_tokens * 4, max_target_tokens + 4)
@@ -333,12 +407,13 @@ class HeterogeneousDraftProposer:
         rid: str,
         current_text: str,
         *,
+        context_ids: Sequence[int] | None = None,
         max_target_tokens: int,
         sampling: SamplingRequest,
     ) -> BaseProposal:
         import torch
 
-        state, cache_event = self._ensure_state(rid, current_text)
+        state, cache_event = self._ensure_state(rid, current_text, context_ids=context_ids)
         self._ensure_intersection_tensors()
         assert self._valid_assistant_ids is not None
         assert self._valid_target_ids is not None
@@ -469,11 +544,22 @@ class HeterogeneousDraftProposer:
                 device=device,
             )
 
-    def _ensure_state(self, rid: str, current_text: str) -> tuple[DraftRequestState, str]:
+    def _ensure_state(
+        self,
+        rid: str,
+        current_text: str,
+        *,
+        context_ids: Sequence[int] | None = None,
+    ) -> tuple[DraftRequestState, str]:
         import torch
 
         rid = str(rid)
-        context_ids = tuple(self._context_ids(current_text))
+        context_ids = tuple(
+            int(token_id)
+            for token_id in (
+                self._context_ids(current_text) if context_ids is None else context_ids
+            )
+        )
         if not context_ids:
             raise ValueError("draft context must contain at least one token.")
 
@@ -619,6 +705,73 @@ class HeterogeneousDraftProposer:
             self._states.popitem(last=False)
             self.stats.cache_evictions += 1
 
+    def _proposal_cache_key(
+        self,
+        *,
+        rid: str,
+        method: str,
+        current_target_ids: Sequence[int],
+        context_ids: Sequence[int],
+        max_target_tokens: int,
+        sampling: SamplingRequest,
+    ) -> ProposalCacheKey | None:
+        if not getattr(self.config, "enable_proposal_cache", True):
+            return None
+        # TLI proposals carry target-probability rows and may sample from the
+        # intersection distribution. Keep them out of the proposal cache until
+        # the verifier path has copy-on-read probability tensors.
+        if method not in {"itl", "itl-base-slem"}:
+            return None
+        target_ids = tuple(int(token_id) for token_id in current_target_ids)
+        draft_context_ids = tuple(int(token_id) for token_id in context_ids)
+        return ProposalCacheKey(
+            rid=str(rid),
+            method=method,
+            target_hash=_hash_ints(target_ids),
+            target_len=len(target_ids),
+            draft_context_hash=_hash_ints(draft_context_ids),
+            draft_context_len=len(draft_context_ids),
+            max_target_tokens=int(max_target_tokens),
+            temperature=_normalize_float(sampling.temperature),
+            top_k=int(sampling.top_k),
+            top_p=_normalize_float(sampling.top_p),
+            add_special_tokens=bool(self.config.add_special_tokens),
+            assistant_lookbehind=int(self.config.assistant_lookbehind),
+            target_lookbehind=int(self.config.target_lookbehind),
+        )
+
+    def _store_proposal_cache(
+        self,
+        cache_key: ProposalCacheKey | None,
+        proposal: BaseProposal,
+    ) -> None:
+        if cache_key is None or not proposal.target_token_ids:
+            return
+        self._proposal_cache[cache_key] = proposal
+        self._proposal_cache.move_to_end(cache_key)
+        self.stats.proposal_cache_stores += 1
+        limit = int(getattr(self.config, "max_cached_proposals", 1024) or 0)
+        if limit <= 0:
+            self._proposal_cache.clear()
+            return
+        while len(self._proposal_cache) > limit:
+            self._proposal_cache.popitem(last=False)
+            self.stats.proposal_cache_evictions += 1
+
+    def _count_method_proposal(self, method: str) -> None:
+        if method == "itl":
+            self.stats.itl_proposals += 1
+        elif method == "itl-base-slem":
+            self.stats.slem_proposals += 1
+        elif method == "itl-base-tli":
+            self.stats.tli_proposals += 1
+
+    def _record_proposal(self, proposal: BaseProposal) -> None:
+        if not proposal.target_token_ids:
+            self.stats.empty_proposals += 1
+        self.stats.proposed_target_tokens += len(proposal.target_token_ids)
+        self.stats.proposed_draft_tokens += len(proposal.draft_token_ids)
+
     def _context_ids(self, text: str) -> tuple[int, ...]:
         token_ids = encode_text(
             self.draft_tokenizer,
@@ -715,6 +868,17 @@ class HeterogeneousDraftProposer:
 
 def _clone_cache(value):
     return _clone_cache_for_reuse(value)
+
+
+def _hash_ints(token_ids: Sequence[int]) -> str:
+    digest = hashlib.blake2b(digest_size=16)
+    for token_id in token_ids:
+        digest.update(int(token_id).to_bytes(8, "little", signed=True))
+    return digest.hexdigest()
+
+
+def _normalize_float(value: float) -> float:
+    return round(float(value), 8)
 
 
 def _clone_nested_tensors(value):

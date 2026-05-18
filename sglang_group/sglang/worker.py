@@ -50,6 +50,14 @@ class SGLangGroupWorkerStats:
     itl_batches: int = 0
     slem_batches: int = 0
     tli_batches: int = 0
+    proposal_cache_hits: int = 0
+    proposal_cache_misses: int = 0
+    proposal_cache_skips: int = 0
+    accepted_on_proposal_cache_hit: int = 0
+    accepted_on_proposal_cache_miss: int = 0
+    draft_cache_hits: int = 0
+    draft_cache_extensions: int = 0
+    draft_cache_rebuilds: int = 0
 
 
 def _result_field_names() -> set[str]:
@@ -166,6 +174,7 @@ class SGLangGroupWorker:
             native_backend=native_backend,
         )
         self.stats = SGLangGroupWorkerStats()
+        self._last_candidate_rows = None
         self._last_metrics_log_time = monotonic()
         logger.info(
             "Initialized SGLANG_GROUP worker: draft=%s, method=%s, draft_backend=%s, "
@@ -292,6 +301,7 @@ class SGLangGroupWorker:
             )
             if accepted_per_req_cpu is not None:
                 self.stats.accepted_draft_tokens += sum(accepted_per_req_cpu)
+                self._record_acceptance_by_cache(accepted_per_req_cpu)
 
             if get_global_tracing_enabled():
                 for idx, req in enumerate(batch.reqs):
@@ -332,6 +342,7 @@ class SGLangGroupWorker:
     def _prepare_for_speculative_decoding(self, batch: ScheduleBatch, *, method: str) -> None:
         bs = batch.batch_size()
         candidate_rows = self._build_candidate_rows(batch, method=method)
+        self._last_candidate_rows = candidate_rows
         rows = candidate_rows.rows
         draft_token_num = candidate_rows.draft_token_num
         draft_token = torch.tensor(
@@ -425,6 +436,9 @@ class SGLangGroupWorker:
         roots: list[int] = []
         target_rows: list[tuple[int, ...]] = []
         draft_prob_rows: list[object | None] = []
+        proposal_cache_events: list[str] = []
+        draft_cache_events: list[str] = []
+        proposal_methods: list[str] = []
         max_target_tokens = self.max_draft_token_num - 1
 
         for idx, req in enumerate(batch.reqs):
@@ -448,14 +462,21 @@ class SGLangGroupWorker:
 
             target_rows.append(proposal.target_token_ids[:max_target_tokens])
             draft_prob_rows.append(proposal.draft_prob_rows)
+            proposal_cache_events.append(proposal.proposal_cache_event)
+            draft_cache_events.append(proposal.cache_event)
+            proposal_methods.append(proposal.method)
 
         candidate_rows = build_linear_candidate_rows(
             roots,
             target_rows,
             max_draft_token_num=self.max_draft_token_num,
             draft_prob_rows=draft_prob_rows if method == "itl-base-tli" else None,
+            proposal_cache_events=proposal_cache_events,
+            draft_cache_events=draft_cache_events,
+            proposal_methods=proposal_methods,
         )
         self.stats.proposed_target_tokens += candidate_rows.proposed_target_tokens
+        self._record_candidate_cache_events(candidate_rows)
         return candidate_rows
 
     def _stack_draft_probs(self, rows: tuple[object | None, ...], *, draft_token_num: int):
@@ -480,6 +501,37 @@ class SGLangGroupWorker:
             self.proposer.evict(finished_req_ids)
             self.stats.evicted_requests += len(finished_req_ids)
 
+    def _record_candidate_cache_events(self, candidate_rows) -> None:
+        for event in getattr(candidate_rows, "proposal_cache_events", ()) or ():
+            if event == "hit":
+                self.stats.proposal_cache_hits += 1
+            elif event == "miss":
+                self.stats.proposal_cache_misses += 1
+            elif event == "skip":
+                self.stats.proposal_cache_skips += 1
+
+        for event in getattr(candidate_rows, "draft_cache_events", ()) or ():
+            if event.startswith("proposal-"):
+                continue
+            if event.endswith("hit"):
+                self.stats.draft_cache_hits += 1
+            elif event.endswith("extend"):
+                self.stats.draft_cache_extensions += 1
+            elif event.endswith("rebuild"):
+                self.stats.draft_cache_rebuilds += 1
+
+    def _record_acceptance_by_cache(self, accepted_per_req_cpu: list[int]) -> None:
+        candidate_rows = self._last_candidate_rows
+        if candidate_rows is None:
+            return
+        events = getattr(candidate_rows, "proposal_cache_events", ()) or ()
+        for event, accepted in zip(events, accepted_per_req_cpu):
+            accepted_count = int(accepted)
+            if event == "hit":
+                self.stats.accepted_on_proposal_cache_hit += accepted_count
+            elif event == "miss":
+                self.stats.accepted_on_proposal_cache_miss += accepted_count
+
     def _maybe_log_metrics(self) -> None:
         interval = self.config.metrics_log_interval
         if interval is None:
@@ -489,10 +541,12 @@ class SGLangGroupWorker:
             return
         self._last_metrics_log_time = now
         logger.info(
-            "SGLANG_GROUP metrics: worker=%s proposer=%s cache_size=%s",
+            "SGLANG_GROUP metrics: worker=%s proposer=%s cache_size=%s "
+            "proposal_cache_size=%s",
             self.stats,
             self.proposer.stats.snapshot(),
             self.proposer.cache_size(),
+            self.proposer.proposal_cache_size(),
         )
 
     def _current_target_ids(self, req: object) -> tuple[int, ...]:

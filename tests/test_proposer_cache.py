@@ -1,6 +1,15 @@
 import unittest
+from collections import OrderedDict
+from types import MethodType
 
-from sglang_group.sglang.proposer import _clone_cache
+from sglang_group.sglang.config import GroupSGLangConfig
+from sglang_group.sglang.proposer import (
+    BaseProposal,
+    DraftProposerStats,
+    HeterogeneousDraftProposer,
+    SamplingRequest,
+    _clone_cache,
+)
 
 
 class ProposerCacheTests(unittest.TestCase):
@@ -55,6 +64,129 @@ class ProposerCacheTests(unittest.TestCase):
         self.assertEqual(cloned.get_seq_length(), 1)
         self.assertIsNot(cloned.legacy_cache[0][0], cache.source_tensor)
         self.assertEqual(int(cloned.legacy_cache[0][0][0].item()), 1)
+
+
+class ProposalResultCacheTests(unittest.TestCase):
+    def _new_proposer(self, config: GroupSGLangConfig | None = None):
+        proposer = object.__new__(HeterogeneousDraftProposer)
+        proposer.config = config or GroupSGLangConfig()
+        proposer._proposal_cache = OrderedDict()
+        proposer._states = OrderedDict()
+        proposer.native_backend = None
+        proposer.stats = DraftProposerStats()
+        proposer._context_ids = MethodType(lambda self, text: (10, 20, 30), proposer)
+        return proposer
+
+    def test_slem_proposal_cache_hits_same_context(self):
+        proposer = self._new_proposer()
+        calls = {"count": 0}
+
+        def fake_slem(
+            self,
+            rid,
+            current_text,
+            current_target_ids,
+            *,
+            context_ids=None,
+            max_target_tokens,
+        ):
+            calls["count"] += 1
+            return BaseProposal(
+                "itl-base-slem",
+                (101, 102),
+                (201, 202),
+                None,
+                "rebuild",
+                len(context_ids or ()),
+            )
+
+        proposer._propose_slem = MethodType(fake_slem, proposer)
+
+        first = proposer.propose(
+            "r0",
+            "hello",
+            (1, 2, 3),
+            max_target_tokens=2,
+            method="itl-base-slem",
+            sampling=SamplingRequest(temperature=0.0),
+        )
+        second = proposer.propose(
+            "r0",
+            "hello",
+            (1, 2, 3),
+            max_target_tokens=2,
+            method="itl-base-slem",
+            sampling=SamplingRequest(temperature=0.0),
+        )
+
+        self.assertEqual(calls["count"], 1)
+        self.assertEqual(first.proposal_cache_event, "miss")
+        self.assertEqual(second.proposal_cache_event, "hit")
+        self.assertEqual(second.target_token_ids, (201, 202))
+        self.assertEqual(proposer.stats.proposal_cache_hits, 1)
+        self.assertEqual(proposer.proposal_cache_size(), 1)
+
+    def test_proposal_cache_skips_tli(self):
+        proposer = self._new_proposer()
+        calls = {"count": 0}
+
+        def fake_tli(
+            self,
+            rid,
+            current_text,
+            *,
+            context_ids=None,
+            max_target_tokens,
+            sampling,
+        ):
+            calls["count"] += 1
+            return BaseProposal(
+                "itl-base-tli",
+                (101,),
+                (201,),
+                ["prob-row"],
+                "rebuild",
+                len(context_ids or ()),
+            )
+
+        proposer._propose_tli = MethodType(fake_tli, proposer)
+
+        for _ in range(2):
+            proposer.propose(
+                "r0",
+                "hello",
+                (1, 2, 3),
+                max_target_tokens=1,
+                method="itl-base-tli",
+                sampling=SamplingRequest(temperature=0.7),
+            )
+
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(proposer.stats.proposal_cache_hits, 0)
+        self.assertEqual(proposer.stats.proposal_cache_skips, 2)
+        self.assertEqual(proposer.proposal_cache_size(), 0)
+
+    def test_evict_removes_matching_proposal_cache_entries(self):
+        proposer = self._new_proposer(GroupSGLangConfig(max_cached_proposals=4))
+
+        def fake_itl(self, rid, current_text, *, context_ids=None, max_target_tokens):
+            return BaseProposal(
+                "itl",
+                (101,),
+                (201,),
+                None,
+                "rebuild",
+                len(context_ids or ()),
+            )
+
+        proposer._propose_itl = MethodType(fake_itl, proposer)
+        proposer.propose("r0", "hello", (1,), max_target_tokens=1, method="itl")
+        proposer.propose("r1", "hello", (1,), max_target_tokens=1, method="itl")
+
+        proposer.evict(["r0"])
+
+        self.assertEqual(proposer.proposal_cache_size(), 1)
+        self.assertEqual(proposer.stats.proposal_cache_evictions, 1)
 
 
 if __name__ == "__main__":

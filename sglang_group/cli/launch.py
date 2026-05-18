@@ -38,12 +38,17 @@ GROUP_VALUE_FLAGS = {
     "--sglang-group-target-lookbehind": "SGLANG_GROUP_TARGET_LOOKBEHIND",
     "--sglang-group-dtw-window": "SGLANG_GROUP_DTW_WINDOW",
     "--sglang-group-max-cached-requests": "SGLANG_GROUP_MAX_CACHED_REQUESTS",
+    "--sglang-group-max-cached-proposals": "SGLANG_GROUP_MAX_CACHED_PROPOSALS",
     "--sglang-group-tli-min-intersection": "SGLANG_GROUP_TLI_MIN_INTERSECTION",
     "--sglang-group-metrics-log-interval": "SGLANG_GROUP_METRICS_LOG_INTERVAL",
 }
 
 GROUP_BOOL_FLAGS = {
     "--no-sglang-group-draft-cache": ("SGLANG_GROUP_ENABLE_DRAFT_CACHE", "false"),
+    "--no-sglang-group-proposal-cache": (
+        "SGLANG_GROUP_ENABLE_PROPOSAL_CACHE",
+        "false",
+    ),
     "--no-sglang-group-cache-clone": ("SGLANG_GROUP_CLONE_DRAFT_CACHE", "false"),
     "--sglang-group-enable-native-draft-kv-cache": (
         "SGLANG_GROUP_ENABLE_NATIVE_DRAFT_KV_CACHE",
@@ -168,6 +173,15 @@ def main(argv: list[str] | None = None) -> None:
                 "Enable experimental accepted-context KV reuse for backend=sglang. "
                 "Default is safe rebuild per proposal."
             ),
+        )
+        parser.add_argument(
+            "--sglang-group-max-cached-proposals",
+            help="Max deterministic proposal-result cache entries. Default: 1024.",
+        )
+        parser.add_argument(
+            "--no-sglang-group-proposal-cache",
+            action="store_true",
+            help="Disable deterministic ITL/SLEM proposal-result caching.",
         )
         parser.add_argument("sglang_args", nargs=argparse.REMAINDER)
         parser.parse_args(argv)

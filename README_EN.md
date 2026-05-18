@@ -174,6 +174,44 @@ or degraded text, disable the flag and keep the default safe rebuild path.
 
 For concurrent requests, the implementation is conservative: it keeps one active draft session, and a different request id triggers rebuild. For high-concurrency tests, keep `--sglang-group-max-context-tokens`, for example `4096` or `8192`. Multi-request LRU native draft caching can be added later.
 
+## Safe Proposal Cache And Diagnostics
+
+This version enables a safe proposal-result cache by default:
+
+```bash
+--sglang-group-max-cached-proposals 1024
+```
+
+It caches deterministic proposal results that have already been generated. It
+does not reuse the SGLang-native draft KV cache, so it avoids the earlier class
+of repeated-output and abnormal `acceptance rate=1.0` failures.
+
+Cached methods by default:
+
+- `itl`
+- `itl-base-slem`
+
+`itl-base-tli` is intentionally not cached yet because it carries target
+probability rows and can be stochastic under sampling. This is more conservative
+but safer.
+
+Disable it with:
+
+```bash
+--no-sglang-group-proposal-cache
+```
+
+Periodic logs include:
+
+- `proposal_cache_hits` / `proposal_cache_misses` / `proposal_cache_skips`
+- `accepted_on_proposal_cache_hit` / `accepted_on_proposal_cache_miss`
+- `draft_cache_hits` / `draft_cache_extensions` / `draft_cache_rebuilds`
+- `proposal_cache_size`
+
+These metrics answer whether the cache is hit, whether cached proposals are
+accepted by the target verifier, and whether the runtime is still using the
+default safe rebuild path.
+
 ## Method Selection
 
 Force a method:

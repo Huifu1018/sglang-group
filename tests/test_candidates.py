@@ -18,6 +18,20 @@ class CandidateRowTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_linear_candidate_rows([1], [[2]], max_draft_token_num=2, draft_prob_rows=[])
 
+    def test_preserves_cache_metadata(self):
+        rows = build_linear_candidate_rows(
+            [10],
+            [[11]],
+            max_draft_token_num=2,
+            proposal_cache_events=["hit"],
+            draft_cache_events=["rebuild"],
+            proposal_methods=["itl"],
+        )
+
+        self.assertEqual(rows.proposal_cache_events, ("hit",))
+        self.assertEqual(rows.draft_cache_events, ("rebuild",))
+        self.assertEqual(rows.proposal_methods, ("itl",))
+
 
 if __name__ == "__main__":
     unittest.main()

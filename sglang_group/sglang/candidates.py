@@ -12,6 +12,9 @@ class CandidateRows:
     draft_token_num: int
     proposed_target_tokens: int
     draft_prob_rows: tuple[object | None, ...] = ()
+    proposal_cache_events: tuple[str, ...] = ()
+    draft_cache_events: tuple[str, ...] = ()
+    proposal_methods: tuple[str, ...] = ()
 
 
 def build_linear_candidate_rows(
@@ -20,6 +23,9 @@ def build_linear_candidate_rows(
     *,
     max_draft_token_num: int,
     draft_prob_rows: Sequence[object | None] | None = None,
+    proposal_cache_events: Sequence[str] | None = None,
+    draft_cache_events: Sequence[str] | None = None,
+    proposal_methods: Sequence[str] | None = None,
 ) -> CandidateRows:
     """Build equal-width linear verify rows.
 
@@ -34,6 +40,12 @@ def build_linear_candidate_rows(
         raise ValueError("roots and target_rows must have the same length.")
     if draft_prob_rows is not None and len(draft_prob_rows) != len(roots):
         raise ValueError("draft_prob_rows must have the same length as roots.")
+    if proposal_cache_events is not None and len(proposal_cache_events) != len(roots):
+        raise ValueError("proposal_cache_events must have the same length as roots.")
+    if draft_cache_events is not None and len(draft_cache_events) != len(roots):
+        raise ValueError("draft_cache_events must have the same length as roots.")
+    if proposal_methods is not None and len(proposal_methods) != len(roots):
+        raise ValueError("proposal_methods must have the same length as roots.")
 
     max_target_tokens = max(0, max_draft_token_num - 1)
     raw_rows: list[tuple[int, ...]] = []
@@ -59,4 +71,7 @@ def build_linear_candidate_rows(
         draft_token_num=draft_token_num,
         proposed_target_tokens=proposed_target_tokens,
         draft_prob_rows=clipped_prob_rows,
+        proposal_cache_events=tuple(proposal_cache_events or ()),
+        draft_cache_events=tuple(draft_cache_events or ()),
+        proposal_methods=tuple(proposal_methods or ()),
     )

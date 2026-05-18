@@ -169,6 +169,40 @@ KV cache 现在是实验功能，需要显式打开：
 
 并发请求下当前实现是保守的：只保留一个 active draft session，不同 request id 会触发 rebuild。高并发测试时建议保留 `--sglang-group-max-context-tokens`，例如 `4096` 或 `8192`。多请求 LRU native draft cache 可以作为后续优化继续做。
 
+## 安全 Proposal Cache 和日志
+
+当前版本默认启用一个安全的 proposal-result cache：
+
+```bash
+--sglang-group-max-cached-proposals 1024
+```
+
+它缓存的是已经生成出来的 deterministic proposal 结果，而不是复用 SGLang-native
+draft KV cache。这样可以避免再次触发之前那类 “重复输出、accept rate 异常为 1”
+的问题。
+
+默认缓存范围：
+
+- `itl`
+- `itl-base-slem`
+
+`itl-base-tli` 暂时不做 proposal-result cache，因为它携带 target probability rows，并且采样场景下存在随机性。这个选择更保守，但更安全。
+
+如需关闭：
+
+```bash
+--no-sglang-group-proposal-cache
+```
+
+日志里会周期性输出：
+
+- `proposal_cache_hits` / `proposal_cache_misses` / `proposal_cache_skips`
+- `accepted_on_proposal_cache_hit` / `accepted_on_proposal_cache_miss`
+- `draft_cache_hits` / `draft_cache_extensions` / `draft_cache_rebuilds`
+- `proposal_cache_size`
+
+这些指标用于判断：缓存是否命中、命中后是否真的被 target verifier 接受，以及当前是否仍在走默认安全 rebuild 路径。
+
 ## 方法选择
 
 可以强制指定方法：

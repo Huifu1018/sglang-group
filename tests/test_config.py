@@ -37,6 +37,8 @@ class ConfigTests(unittest.TestCase):
         config = GroupSGLangConfig.from_env()
         self.assertEqual(config.draft_backend, "sglang")
         self.assertFalse(config.native_draft_kv_cache)
+        self.assertTrue(config.enable_proposal_cache)
+        self.assertEqual(config.max_cached_proposals, 1024)
 
     def test_env_validation(self):
         with patch.dict("os.environ", {"SGLANG_GROUP_METHOD": "bad"}):
@@ -51,6 +53,8 @@ class ConfigTests(unittest.TestCase):
                 "SGLANG_GROUP_NATIVE_DRAFT_CACHE_TOKENS": "4096",
                 "SGLANG_GROUP_NATIVE_DRAFT_MAX_REQUESTS": "2",
                 "SGLANG_GROUP_ENABLE_NATIVE_DRAFT_KV_CACHE": "1",
+                "SGLANG_GROUP_ENABLE_PROPOSAL_CACHE": "0",
+                "SGLANG_GROUP_MAX_CACHED_PROPOSALS": "12",
             },
         ):
             config = GroupSGLangConfig.from_env()
@@ -58,6 +62,8 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.native_draft_cache_tokens, 4096)
             self.assertEqual(config.native_draft_max_requests, 2)
             self.assertTrue(config.native_draft_kv_cache)
+            self.assertFalse(config.enable_proposal_cache)
+            self.assertEqual(config.max_cached_proposals, 12)
 
 
 if __name__ == "__main__":
