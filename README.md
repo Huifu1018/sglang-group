@@ -160,9 +160,10 @@ KV cache 现在是实验功能，需要显式打开：
 打开后，行为是：
 
 - 同一个 active request 会保留已接受的 draft 上下文。
-- proposal 期间会 snapshot draft SGLang batch。
+- proposal 期间会 snapshot draft SGLang batch、request attrs、allocator state 和 `req_to_token` 行。
 - speculative draft tokens decode 完后，只回滚 speculative allocator 和 batch 状态。
 - 下一轮 proposal 会把已接受 target 文本重新映射后的 draft suffix commit 进 draft cache。
+- 如果 rollback 校验发现 `seq_lens` / `kv_committed_len` / `kv_allocated_len` 不一致，会自动清空并禁用 native draft KV cache，后续回到安全 rebuild。
 
 如果打开该实验开关后看到重复输出、`acceptance rate=1.0` 或输出退化，请先关闭
 该开关，保留默认安全 rebuild 路径。
@@ -309,14 +310,16 @@ SGLang。默认 draft backend 是 `sglang`，也就是 target/draft 都走 SGLan
 | `--sglang-group-native-draft-quantization` | `SGLANG_GROUP_NATIVE_DRAFT_QUANTIZATION` | 未设置 | SGLang-native draft backend 的 draft 量化覆盖。 |
 | `--sglang-group-native-draft-cache-tokens` | `SGLANG_GROUP_NATIVE_DRAFT_CACHE_TOKENS` | 自动推导 | SGLang-native draft KV pool token 数。 |
 | `--sglang-group-native-draft-max-requests` | `SGLANG_GROUP_NATIVE_DRAFT_MAX_REQUESTS` | `1` | SGLang-native draft request pool 大小。 |
-| `--sglang-group-enable-native-draft-kv-cache` | `SGLANG_GROUP_ENABLE_NATIVE_DRAFT_KV_CACHE=true` | disabled | 实验性开启 SGLang-native accepted-context KV cache；默认关闭以保证正确性。 |
+| `--sglang-group-enable-native-draft-kv-cache` | `SGLANG_GROUP_ENABLE_NATIVE_DRAFT_KV_CACHE=true` | disabled | 实验性开启 SGLang-native accepted-context KV cache；带 rollback 校验和失败后自动回退，默认关闭以保证正确性。 |
 | `--sglang-group-max-draft-tokens` | `SGLANG_GROUP_MAX_DRAFT_TOKENS` | 自动推导 | 每次 proposal 的最大 draft 自回归步数。 |
 | `--sglang-group-max-context-tokens` | `SGLANG_GROUP_MAX_CONTEXT_TOKENS` | 未设置 | proposal 前截断 draft-side context。 |
 | `--sglang-group-dtw-window` | `SGLANG_GROUP_DTW_WINDOW` | `8` | `itl` 对齐诊断使用的 DTW window。 |
 | `--sglang-group-assistant-lookbehind` | `SGLANG_GROUP_ASSISTANT_LOOKBEHIND` | `10` | SLEM assistant-side lookbehind。 |
 | `--sglang-group-target-lookbehind` | `SGLANG_GROUP_TARGET_LOOKBEHIND` | `10` | SLEM target-side lookbehind。 |
 | `--sglang-group-max-cached-requests` | `SGLANG_GROUP_MAX_CACHED_REQUESTS` | `256` | Transformers backend 的 per-request draft KV cache 数。 |
+| `--sglang-group-max-cached-proposals` | `SGLANG_GROUP_MAX_CACHED_PROPOSALS` | `1024` | deterministic `itl` / `itl-base-slem` proposal-result cache 数。 |
 | `--no-sglang-group-draft-cache` | `SGLANG_GROUP_ENABLE_DRAFT_CACHE=false` | enabled | 关闭 Transformers backend 的 HF draft cache；SGLang-native KV cache 需另行显式开启。 |
+| `--no-sglang-group-proposal-cache` | `SGLANG_GROUP_ENABLE_PROPOSAL_CACHE=false` | enabled | 关闭安全 proposal-result cache。 |
 | `--no-sglang-group-cache-clone` | `SGLANG_GROUP_CLONE_DRAFT_CACHE=false` | enabled | 关闭 Transformers backend 的保守 cache clone。 |
 | `--sglang-group-tli-min-intersection` | `SGLANG_GROUP_TLI_MIN_INTERSECTION` | `1` | TLI 最小共享 token 数。 |
 | `--sglang-group-metrics-log-interval` | `SGLANG_GROUP_METRICS_LOG_INTERVAL` | `60` | worker metrics 日志间隔；`0` 表示关闭。 |

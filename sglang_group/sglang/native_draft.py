@@ -11,6 +11,7 @@ future draft state.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import logging
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -73,6 +74,7 @@ class SGLangNativeDraftSession:
         for token_id in suffix:
             self.decode(token_id)
         self.accepted_input_ids = self.accepted_input_ids + suffix
+        self._validate_restored_context("commit")
 
     def begin_speculative(self) -> "SGLangNativeDraftSession":
         if self._snapshot is not None:
@@ -107,6 +109,7 @@ class SGLangNativeDraftSession:
             for row_index, row_value in snapshot.req_to_token_rows:
                 req_to_token[row_index].copy_(row_value)
         self.next_token_logits = _clone_for_restore(snapshot.next_token_logits)
+        self._validate_restored_context("rollback")
 
     def _take_snapshot(self) -> _NativeDraftSnapshot:
         allocator = self.backend.model_runner.token_to_kv_pool_allocator
@@ -116,38 +119,10 @@ class SGLangNativeDraftSession:
                 "SGLang-native draft allocator cannot snapshot speculative state."
             )
 
-        batch_attr_names = (
-            "input_ids",
-            "output_ids",
-            "out_cache_loc",
-            "seq_lens",
-            "seq_lens_cpu",
-            "seq_lens_sum",
-            "orig_seq_lens",
-        )
-        batch_attrs = {
-            name: _clone_for_snapshot(getattr(self.batch, name))
-            for name in batch_attr_names
-            if hasattr(self.batch, name)
-        }
-        req_attr_names = (
-            "kv_committed_len",
-            "kv_allocated_len",
-            "kv_committed_freed",
-            "kv_overallocated_freed",
-            "decode_batch_idx",
-            "extend_batch_idx",
-            "output_ids",
-            "fill_ids",
-        )
+        batch_attrs = _snapshot_batch_attrs(self.batch)
         req_attrs: list[tuple[object, dict[str, object]]] = []
         for req in getattr(self.batch, "reqs", []) or []:
-            attrs = {
-                name: _clone_for_snapshot(getattr(req, name))
-                for name in req_attr_names
-                if hasattr(req, name)
-            }
-            req_attrs.append((req, attrs))
+            req_attrs.append((req, _snapshot_object_attrs(req)))
 
         req_to_token_rows = []
         req_to_token_pool = getattr(
@@ -169,6 +144,35 @@ class SGLangNativeDraftSession:
             allocator_state=_clone_for_snapshot(backup_state()),
             req_to_token_rows=req_to_token_rows,
         )
+
+    def _validate_restored_context(self, label: str) -> None:
+        expected_len = len(self.accepted_input_ids)
+        batch = self.batch
+        seq_lens_cpu = getattr(batch, "seq_lens_cpu", None)
+        if seq_lens_cpu is not None and len(seq_lens_cpu) > 0:
+            actual = _int_index(seq_lens_cpu, 0)
+            if actual != expected_len:
+                raise RuntimeError(
+                    "SGLang-native draft cache state mismatch after "
+                    f"{label}: seq_lens_cpu={actual}, expected={expected_len}."
+                )
+        seq_lens = getattr(batch, "seq_lens", None)
+        if seq_lens is not None and len(seq_lens) > 0:
+            actual = _int_index(seq_lens, 0)
+            if actual != expected_len:
+                raise RuntimeError(
+                    "SGLang-native draft cache state mismatch after "
+                    f"{label}: seq_lens={actual}, expected={expected_len}."
+                )
+        for req in getattr(batch, "reqs", []) or []:
+            committed = getattr(req, "kv_committed_len", expected_len)
+            allocated = getattr(req, "kv_allocated_len", expected_len)
+            if int(committed) != expected_len or int(allocated) != expected_len:
+                raise RuntimeError(
+                    "SGLang-native draft cache state mismatch after "
+                    f"{label}: kv_committed_len={committed}, "
+                    f"kv_allocated_len={allocated}, expected={expected_len}."
+                )
 
 
 class SGLangNativeDraftBackend:
@@ -235,6 +239,7 @@ class SGLangNativeDraftBackend:
         self._cached_session: SGLangNativeDraftSession | None = None
         self._cached_rid: str | None = None
         self._cached_input_ids: tuple[int, ...] = ()
+        self._native_kv_cache_disabled_reason: str | None = None
 
         logger.info(
             "Initialized SGLang-native draft backend: draft=%s, device=%s, "
@@ -338,14 +343,30 @@ class SGLangNativeDraftBackend:
     def cache_size(self) -> int:
         return 1 if self._cached_session is not None else 0
 
+    def disable_kv_cache(self, reason: str) -> None:
+        self._native_kv_cache_disabled_reason = reason
+        self.clear()
+        logger.warning(
+            "Disabled SGLang-native accepted-context draft KV cache: %s. "
+            "Future proposals will use safe rebuild.",
+            reason,
+        )
+
     def _drop_cached_session(self) -> None:
         self._cached_session = None
         self._cached_rid = None
         self._cached_input_ids = ()
 
     def _clear_pools(self) -> None:
-        self.model_runner.req_to_token_pool.clear()
-        self.model_runner.token_to_kv_pool_allocator.clear()
+        model_runner = getattr(self, "model_runner", None)
+        req_to_token_pool = getattr(model_runner, "req_to_token_pool", None)
+        clear_req_pool = getattr(req_to_token_pool, "clear", None)
+        if callable(clear_req_pool):
+            clear_req_pool()
+        allocator = getattr(model_runner, "token_to_kv_pool_allocator", None)
+        clear_allocator = getattr(allocator, "clear", None)
+        if callable(clear_allocator):
+            clear_allocator()
 
     def ensure_session(
         self,
@@ -360,6 +381,7 @@ class SGLangNativeDraftBackend:
         rid = str(rid)
         use_kv_cache = (
             self.config.enable_draft_cache and self.config.native_draft_kv_cache
+            and getattr(self, "_native_kv_cache_disabled_reason", None) is None
         )
         if use_kv_cache and self._cached_session is not None:
             if self._cached_rid == rid and self._cached_input_ids == ids:
@@ -372,9 +394,10 @@ class SGLangNativeDraftBackend:
                 suffix = ids[len(self._cached_input_ids) :]
                 try:
                     self._cached_session.commit_tokens(suffix)
-                except Exception:
-                    self.clear()
-                    raise
+                except Exception as exc:
+                    self.disable_kv_cache(f"accepted suffix commit failed: {exc}")
+                    session = self.prefill(ids, rid=rid)
+                    return session, "sglang-rebuild"
                 self._cached_input_ids = ids
                 return self._cached_session, "sglang-extend"
 
@@ -510,6 +533,44 @@ def _ceil_to_page(value: int, page_size: int) -> int:
     if page_size <= 1:
         return value
     return ((value + page_size - 1) // page_size) * page_size
+
+
+def _snapshot_batch_attrs(batch: object) -> dict[str, object]:
+    excluded = {
+        "reqs",
+        "req_to_token_pool",
+        "token_to_kv_pool_allocator",
+        "tree_cache",
+        "model_config",
+    }
+    names: set[str] = set()
+    if dataclasses.is_dataclass(batch):
+        names.update(field.name for field in dataclasses.fields(batch))
+    try:
+        names.update(vars(batch).keys())
+    except TypeError:
+        pass
+    return {
+        name: _clone_for_snapshot(getattr(batch, name))
+        for name in sorted(names)
+        if name not in excluded and hasattr(batch, name)
+    }
+
+
+def _snapshot_object_attrs(obj: object) -> dict[str, object]:
+    try:
+        attrs = vars(obj)
+    except TypeError:
+        return {}
+    return {name: _clone_for_snapshot(value) for name, value in attrs.items()}
+
+
+def _int_index(value, index: int) -> int:
+    item = value[index]
+    try:
+        return int(item.item())
+    except AttributeError:
+        return int(item)
 
 
 def _clone_for_snapshot(value):

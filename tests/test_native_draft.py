@@ -61,6 +61,7 @@ class NativeDraftSessionTests(unittest.TestCase):
                 self.seq_lens_cpu = [3]
                 self.seq_lens_sum = 3
                 self.orig_seq_lens = [3]
+                self.forward_mode = "EXTEND"
                 self.reqs = [FakeReq()]
 
         backend = FakeBackend()
@@ -75,7 +76,13 @@ class NativeDraftSessionTests(unittest.TestCase):
         session.begin_speculative()
         self.assertEqual(session.decode(4), ["logits-4"])
         self.assertEqual(session.batch.seq_lens, [4])
-        self.assertEqual(backend.model_runner.token_to_kv_pool_allocator.values, ["accepted", 4])
+        self.assertEqual(
+            backend.model_runner.token_to_kv_pool_allocator.values,
+            ["accepted", 4],
+        )
+        session.batch.forward_mode = "DECODE"
+        session.batch.custom_attr = "speculative"
+        session.batch.reqs[0].fill_ids.append(4)
 
         session.rollback_speculative()
 
@@ -83,9 +90,56 @@ class NativeDraftSessionTests(unittest.TestCase):
         self.assertEqual(session.batch.seq_lens, [3])
         self.assertEqual(session.batch.seq_lens_sum, 3)
         self.assertEqual(session.batch.output_ids, [])
+        self.assertEqual(session.batch.forward_mode, "EXTEND")
+        self.assertEqual(session.batch.reqs[0].fill_ids, [1, 2, 3])
         self.assertEqual(session.batch.reqs[0].kv_committed_len, 3)
         self.assertEqual(session.batch.reqs[0].output_ids, [])
-        self.assertEqual(backend.model_runner.token_to_kv_pool_allocator.values, ["accepted"])
+        self.assertEqual(
+            backend.model_runner.token_to_kv_pool_allocator.values,
+            ["accepted"],
+        )
+
+    def test_rollback_detects_incomplete_restore(self):
+        class FakeAllocator:
+            def backup_state(self):
+                return ("accepted",)
+
+            def restore_state(self, state):
+                return None
+
+        class FakeModelRunner:
+            def __init__(self):
+                self.token_to_kv_pool_allocator = FakeAllocator()
+
+        class FakeBackend:
+            def __init__(self):
+                self.model_runner = FakeModelRunner()
+
+        class FakeReq:
+            def __init__(self):
+                self.kv_committed_len = 3
+                self.kv_allocated_len = 3
+
+        class FakeBatch:
+            def __init__(self):
+                self.seq_lens = [3]
+                self.seq_lens_cpu = [3]
+                self.reqs = [FakeReq()]
+
+        session = SGLangNativeDraftSession(
+            backend=FakeBackend(),
+            batch=FakeBatch(),
+            next_token_logits=["base-logits"],
+            rid="r0",
+            accepted_input_ids=(1, 2, 3),
+        )
+
+        session.begin_speculative()
+        session.batch.seq_lens = [4]
+        session._snapshot.batch_attrs.pop("seq_lens")
+
+        with self.assertRaisesRegex(RuntimeError, "state mismatch"):
+            session.rollback_speculative()
 
     def test_speculative_rollback_restores_req_to_token_row(self):
         try:
@@ -166,6 +220,26 @@ class NativeProposerHelpersTests(unittest.TestCase):
         self.assertEqual(session.begin_count, 1)
         self.assertEqual(session.rollback_count, 1)
 
+    def test_native_rollback_failure_disables_backend_cache(self):
+        class FakeBackend:
+            def __init__(self):
+                self.disabled_reason = None
+
+            def disable_kv_cache(self, reason):
+                self.disabled_reason = reason
+
+        class BrokenSession:
+            def rollback_speculative(self):
+                raise RuntimeError("broken rollback")
+
+        backend = FakeBackend()
+        proposer = object.__new__(HeterogeneousDraftProposer)
+        proposer.native_backend = backend
+
+        proposer._rollback_past_key_values(BrokenSession())
+
+        self.assertIn("broken rollback", backend.disabled_reason)
+
 
 class NativeDraftCachePolicyTests(unittest.TestCase):
     def _backend(self, *, native_kv_cache: bool):
@@ -206,6 +280,30 @@ class NativeDraftCachePolicyTests(unittest.TestCase):
         self.assertEqual(event, "sglang-hit")
         self.assertEqual(session.accepted_input_ids, (1, 2))
         self.assertEqual(backend.prefill_calls, [])
+
+    def test_native_kv_cache_disable_falls_back_to_rebuild(self):
+        backend = self._backend(native_kv_cache=True)
+        backend.disable_kv_cache("test")
+
+        session, event = backend.ensure_session((1, 2), rid="r0")
+
+        self.assertEqual(event, "sglang-rebuild")
+        self.assertEqual(session.accepted_input_ids, (1, 2))
+        self.assertEqual(backend.prefill_calls, [((1, 2), "r0")])
+
+    def test_native_kv_cache_commit_failure_falls_back_to_rebuild(self):
+        backend = self._backend(native_kv_cache=True)
+
+        def broken_commit(suffix):
+            raise RuntimeError("commit failed")
+
+        backend._cached_session.commit_tokens = broken_commit
+
+        session, event = backend.ensure_session((1, 2, 3), rid="r0")
+
+        self.assertEqual(event, "sglang-rebuild")
+        self.assertEqual(session.accepted_input_ids, (1, 2, 3))
+        self.assertEqual(backend.prefill_calls, [((1, 2, 3), "r0")])
 
 
 if __name__ == "__main__":

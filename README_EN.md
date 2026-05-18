@@ -165,9 +165,10 @@ draft KV caching is now experimental and must be enabled explicitly:
 When enabled:
 
 - The active request keeps accepted draft context.
-- Proposal generation snapshots the draft SGLang batch.
+- Proposal generation snapshots the draft SGLang batch, request attrs, allocator state, and `req_to_token` row.
 - After decoding speculative draft tokens, only speculative allocator and batch state are rolled back.
 - On the next proposal, the accepted target text is re-tokenized and the draft suffix is committed into the draft cache.
+- If rollback validation finds inconsistent `seq_lens`, `kv_committed_len`, or `kv_allocated_len`, the native draft KV cache is cleared and disabled, and later proposals fall back to safe rebuild.
 
 If enabling this experimental flag causes repeated output, `acceptance rate=1.0`,
 or degraded text, disable the flag and keep the default safe rebuild path.
@@ -319,14 +320,16 @@ through SGLang. For controlled comparisons, pass
 | `--sglang-group-native-draft-quantization` | `SGLANG_GROUP_NATIVE_DRAFT_QUANTIZATION` | unset | Draft quantization override for SGLang-native backend. |
 | `--sglang-group-native-draft-cache-tokens` | `SGLANG_GROUP_NATIVE_DRAFT_CACHE_TOKENS` | derived | Draft KV pool tokens for SGLang-native backend. |
 | `--sglang-group-native-draft-max-requests` | `SGLANG_GROUP_NATIVE_DRAFT_MAX_REQUESTS` | `1` | Draft request pool size for SGLang-native backend. |
-| `--sglang-group-enable-native-draft-kv-cache` | `SGLANG_GROUP_ENABLE_NATIVE_DRAFT_KV_CACHE=true` | disabled | Experimental SGLang-native accepted-context KV cache; disabled by default for correctness. |
+| `--sglang-group-enable-native-draft-kv-cache` | `SGLANG_GROUP_ENABLE_NATIVE_DRAFT_KV_CACHE=true` | disabled | Experimental SGLang-native accepted-context KV cache with rollback validation and automatic fallback; disabled by default for correctness. |
 | `--sglang-group-max-draft-tokens` | `SGLANG_GROUP_MAX_DRAFT_TOKENS` | derived | Max draft autoregressive steps per proposal. |
 | `--sglang-group-max-context-tokens` | `SGLANG_GROUP_MAX_CONTEXT_TOKENS` | unset | Truncate draft-side context before proposal. |
 | `--sglang-group-dtw-window` | `SGLANG_GROUP_DTW_WINDOW` | `8` | DTW window for `itl` diagnostics. |
 | `--sglang-group-assistant-lookbehind` | `SGLANG_GROUP_ASSISTANT_LOOKBEHIND` | `10` | SLEM assistant-side lookbehind. |
 | `--sglang-group-target-lookbehind` | `SGLANG_GROUP_TARGET_LOOKBEHIND` | `10` | SLEM target-side lookbehind. |
 | `--sglang-group-max-cached-requests` | `SGLANG_GROUP_MAX_CACHED_REQUESTS` | `256` | Per-request draft KV cache entries for Transformers backend. |
+| `--sglang-group-max-cached-proposals` | `SGLANG_GROUP_MAX_CACHED_PROPOSALS` | `1024` | Deterministic `itl` / `itl-base-slem` proposal-result cache entries. |
 | `--no-sglang-group-draft-cache` | `SGLANG_GROUP_ENABLE_DRAFT_CACHE=false` | enabled | Disable the Transformers backend HF draft cache; SGLang-native KV cache is enabled separately. |
+| `--no-sglang-group-proposal-cache` | `SGLANG_GROUP_ENABLE_PROPOSAL_CACHE=false` | enabled | Disable the safe proposal-result cache. |
 | `--no-sglang-group-cache-clone` | `SGLANG_GROUP_CLONE_DRAFT_CACHE=false` | enabled | Disable conservative cache clone for Transformers backend. |
 | `--sglang-group-tli-min-intersection` | `SGLANG_GROUP_TLI_MIN_INTERSECTION` | `1` | Minimum shared-token count for TLI. |
 | `--sglang-group-metrics-log-interval` | `SGLANG_GROUP_METRICS_LOG_INTERVAL` | `60` | Worker metrics log interval; `0` disables it. |

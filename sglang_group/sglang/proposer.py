@@ -807,7 +807,21 @@ class HeterogeneousDraftProposer:
             return
         rollback = getattr(past_key_values, "rollback_speculative", None)
         if callable(rollback):
-            rollback()
+            try:
+                rollback()
+            except Exception as exc:
+                disable_kv_cache = getattr(self.native_backend, "disable_kv_cache", None)
+                if callable(disable_kv_cache):
+                    disable_kv_cache(f"speculative rollback failed: {exc}")
+                else:
+                    clear = getattr(self.native_backend, "clear", None)
+                    if callable(clear):
+                        clear()
+                logger.warning(
+                    "SGLANG_GROUP disabled native draft KV reuse after rollback "
+                    "failure; continuing with safe rebuild for future proposals.",
+                    exc_info=True,
+                )
 
     def _alignment_cost(
         self,
