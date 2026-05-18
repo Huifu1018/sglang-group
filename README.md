@@ -144,14 +144,28 @@ native backend 不会继承 target 模型的量化配置。例如 target 是 NVF
 --sglang-group-native-draft-quantization awq
 ```
 
-当前版本已经实现 accepted-context draft KV cache：
+默认情况下，SGLang-native draft backend 每轮 proposal 都会重新 prefill 当前
+draft-side context。这样会多一些 draft 侧开销，但可以避免 SGLang 内部
+`ScheduleBatch` / KV allocator rollback 不完整时出现的重复输出和异常
+accept rate。
+
+`SGLANG_GROUP_ENABLE_DRAFT_CACHE` 仍然控制 Transformers backend 的 HF
+`past_key_values` cache。对于 SGLang-native backend，accepted-context draft
+KV cache 现在是实验功能，需要显式打开：
+
+```bash
+--sglang-group-enable-native-draft-kv-cache
+```
+
+打开后，行为是：
 
 - 同一个 active request 会保留已接受的 draft 上下文。
 - proposal 期间会 snapshot draft SGLang batch。
 - speculative draft tokens decode 完后，只回滚 speculative allocator 和 batch 状态。
 - 下一轮 proposal 会把已接受 target 文本重新映射后的 draft suffix commit 进 draft cache。
 
-因此，单请求或低并发流式生成不会每轮都完整 draft prefill。
+如果打开该实验开关后看到重复输出、`acceptance rate=1.0` 或输出退化，请先关闭
+该开关，保留默认安全 rebuild 路径。
 
 并发请求下当前实现是保守的：只保留一个 active draft session，不同 request id 会触发 rebuild。高并发测试时建议保留 `--sglang-group-max-context-tokens`，例如 `4096` 或 `8192`。多请求 LRU native draft cache 可以作为后续优化继续做。
 
@@ -261,13 +275,14 @@ SGLang。默认 draft backend 是 `sglang`，也就是 target/draft 都走 SGLan
 | `--sglang-group-native-draft-quantization` | `SGLANG_GROUP_NATIVE_DRAFT_QUANTIZATION` | 未设置 | SGLang-native draft backend 的 draft 量化覆盖。 |
 | `--sglang-group-native-draft-cache-tokens` | `SGLANG_GROUP_NATIVE_DRAFT_CACHE_TOKENS` | 自动推导 | SGLang-native draft KV pool token 数。 |
 | `--sglang-group-native-draft-max-requests` | `SGLANG_GROUP_NATIVE_DRAFT_MAX_REQUESTS` | `1` | SGLang-native draft request pool 大小。 |
+| `--sglang-group-enable-native-draft-kv-cache` | `SGLANG_GROUP_ENABLE_NATIVE_DRAFT_KV_CACHE=true` | disabled | 实验性开启 SGLang-native accepted-context KV cache；默认关闭以保证正确性。 |
 | `--sglang-group-max-draft-tokens` | `SGLANG_GROUP_MAX_DRAFT_TOKENS` | 自动推导 | 每次 proposal 的最大 draft 自回归步数。 |
 | `--sglang-group-max-context-tokens` | `SGLANG_GROUP_MAX_CONTEXT_TOKENS` | 未设置 | proposal 前截断 draft-side context。 |
 | `--sglang-group-dtw-window` | `SGLANG_GROUP_DTW_WINDOW` | `8` | `itl` 对齐诊断使用的 DTW window。 |
 | `--sglang-group-assistant-lookbehind` | `SGLANG_GROUP_ASSISTANT_LOOKBEHIND` | `10` | SLEM assistant-side lookbehind。 |
 | `--sglang-group-target-lookbehind` | `SGLANG_GROUP_TARGET_LOOKBEHIND` | `10` | SLEM target-side lookbehind。 |
 | `--sglang-group-max-cached-requests` | `SGLANG_GROUP_MAX_CACHED_REQUESTS` | `256` | Transformers backend 的 per-request draft KV cache 数。 |
-| `--no-sglang-group-draft-cache` | `SGLANG_GROUP_ENABLE_DRAFT_CACHE=false` | enabled | 关闭 draft KV cache，用于诊断。 |
+| `--no-sglang-group-draft-cache` | `SGLANG_GROUP_ENABLE_DRAFT_CACHE=false` | enabled | 关闭 Transformers backend 的 HF draft cache；SGLang-native KV cache 需另行显式开启。 |
 | `--no-sglang-group-cache-clone` | `SGLANG_GROUP_CLONE_DRAFT_CACHE=false` | enabled | 关闭 Transformers backend 的保守 cache clone。 |
 | `--sglang-group-tli-min-intersection` | `SGLANG_GROUP_TLI_MIN_INTERSECTION` | `1` | TLI 最小共享 token 数。 |
 | `--sglang-group-metrics-log-interval` | `SGLANG_GROUP_METRICS_LOG_INTERVAL` | `60` | worker metrics 日志间隔；`0` 表示关闭。 |
@@ -282,7 +297,7 @@ SGLang。默认 draft backend 是 `sglang`，也就是 target/draft 都走 SGLan
 - 多模态请求会对该请求 fallback 到 target-only verification。
 - `itl-base-slem` 只支持 greedy。
 - SGLang-native draft backend 不支持 HF `device_map`。
-- 当前 SGLang-native draft cache 是单 active request cache，尚不是多请求 LRU cache。
+- 当前 SGLang-native draft KV cache 是实验功能，默认关闭；打开后也是单 active request cache，尚不是多请求 LRU cache。
 
 ## 开发检查
 

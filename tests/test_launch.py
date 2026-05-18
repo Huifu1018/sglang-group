@@ -42,6 +42,7 @@ class LaunchTests(unittest.TestCase):
             "--sglang-group-native-draft-cache-tokens",
             "8192",
             "--sglang-group-native-draft-max-requests=2",
+            "--sglang-group-enable-native-draft-kv-cache",
             "--no-sglang-group-draft-cache",
         ]
 
@@ -54,6 +55,7 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(environ["SGLANG_GROUP_NATIVE_DRAFT_QUANTIZATION"], "awq")
         self.assertEqual(environ["SGLANG_GROUP_NATIVE_DRAFT_CACHE_TOKENS"], "8192")
         self.assertEqual(environ["SGLANG_GROUP_NATIVE_DRAFT_MAX_REQUESTS"], "2")
+        self.assertEqual(environ["SGLANG_GROUP_ENABLE_NATIVE_DRAFT_KV_CACHE"], "true")
         self.assertEqual(environ["SGLANG_GROUP_ENABLE_DRAFT_CACHE"], "false")
 
     def test_adds_legacy_ngram_flags(self):

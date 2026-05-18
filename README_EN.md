@@ -149,14 +149,28 @@ The native backend does not inherit the target model quantization. For example, 
 --sglang-group-native-draft-quantization awq
 ```
 
-The current version implements accepted-context draft KV caching:
+By default, the SGLang-native draft backend rebuilds the current draft-side
+context for every proposal. This costs more draft-side work, but avoids repeated
+outputs and abnormal acceptance rates when SGLang internal `ScheduleBatch` / KV
+allocator rollback is incomplete.
+
+`SGLANG_GROUP_ENABLE_DRAFT_CACHE` still controls the HF `past_key_values` cache
+for the Transformers backend. For the SGLang-native backend, accepted-context
+draft KV caching is now experimental and must be enabled explicitly:
+
+```bash
+--sglang-group-enable-native-draft-kv-cache
+```
+
+When enabled:
 
 - The active request keeps accepted draft context.
 - Proposal generation snapshots the draft SGLang batch.
 - After decoding speculative draft tokens, only speculative allocator and batch state are rolled back.
 - On the next proposal, the accepted target text is re-tokenized and the draft suffix is committed into the draft cache.
 
-So single-request or low-concurrency streaming does not fully prefill the draft model every proposal.
+If enabling this experimental flag causes repeated output, `acceptance rate=1.0`,
+or degraded text, disable the flag and keep the default safe rebuild path.
 
 For concurrent requests, the implementation is conservative: it keeps one active draft session, and a different request id triggers rebuild. For high-concurrency tests, keep `--sglang-group-max-context-tokens`, for example `4096` or `8192`. Multi-request LRU native draft caching can be added later.
 
@@ -267,13 +281,14 @@ through SGLang. For controlled comparisons, pass
 | `--sglang-group-native-draft-quantization` | `SGLANG_GROUP_NATIVE_DRAFT_QUANTIZATION` | unset | Draft quantization override for SGLang-native backend. |
 | `--sglang-group-native-draft-cache-tokens` | `SGLANG_GROUP_NATIVE_DRAFT_CACHE_TOKENS` | derived | Draft KV pool tokens for SGLang-native backend. |
 | `--sglang-group-native-draft-max-requests` | `SGLANG_GROUP_NATIVE_DRAFT_MAX_REQUESTS` | `1` | Draft request pool size for SGLang-native backend. |
+| `--sglang-group-enable-native-draft-kv-cache` | `SGLANG_GROUP_ENABLE_NATIVE_DRAFT_KV_CACHE=true` | disabled | Experimental SGLang-native accepted-context KV cache; disabled by default for correctness. |
 | `--sglang-group-max-draft-tokens` | `SGLANG_GROUP_MAX_DRAFT_TOKENS` | derived | Max draft autoregressive steps per proposal. |
 | `--sglang-group-max-context-tokens` | `SGLANG_GROUP_MAX_CONTEXT_TOKENS` | unset | Truncate draft-side context before proposal. |
 | `--sglang-group-dtw-window` | `SGLANG_GROUP_DTW_WINDOW` | `8` | DTW window for `itl` diagnostics. |
 | `--sglang-group-assistant-lookbehind` | `SGLANG_GROUP_ASSISTANT_LOOKBEHIND` | `10` | SLEM assistant-side lookbehind. |
 | `--sglang-group-target-lookbehind` | `SGLANG_GROUP_TARGET_LOOKBEHIND` | `10` | SLEM target-side lookbehind. |
 | `--sglang-group-max-cached-requests` | `SGLANG_GROUP_MAX_CACHED_REQUESTS` | `256` | Per-request draft KV cache entries for Transformers backend. |
-| `--no-sglang-group-draft-cache` | `SGLANG_GROUP_ENABLE_DRAFT_CACHE=false` | enabled | Disable draft KV cache for diagnosis. |
+| `--no-sglang-group-draft-cache` | `SGLANG_GROUP_ENABLE_DRAFT_CACHE=false` | enabled | Disable the Transformers backend HF draft cache; SGLang-native KV cache is enabled separately. |
 | `--no-sglang-group-cache-clone` | `SGLANG_GROUP_CLONE_DRAFT_CACHE=false` | enabled | Disable conservative cache clone for Transformers backend. |
 | `--sglang-group-tli-min-intersection` | `SGLANG_GROUP_TLI_MIN_INTERSECTION` | `1` | Minimum shared-token count for TLI. |
 | `--sglang-group-metrics-log-interval` | `SGLANG_GROUP_METRICS_LOG_INTERVAL` | `60` | Worker metrics log interval; `0` disables it. |
@@ -288,7 +303,7 @@ through SGLang. For controlled comparisons, pass
 - Multimodal requests fall back to target-only verification for that request.
 - `itl-base-slem` is greedy only.
 - SGLang-native draft backend does not support HF `device_map`.
-- Current SGLang-native draft cache is one active request cache, not multi-request LRU.
+- Current SGLang-native draft KV cache is experimental and disabled by default; when enabled it is still one active request cache, not multi-request LRU.
 
 ## Development Checks
 

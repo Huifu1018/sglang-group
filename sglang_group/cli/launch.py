@@ -45,6 +45,10 @@ GROUP_VALUE_FLAGS = {
 GROUP_BOOL_FLAGS = {
     "--no-sglang-group-draft-cache": ("SGLANG_GROUP_ENABLE_DRAFT_CACHE", "false"),
     "--no-sglang-group-cache-clone": ("SGLANG_GROUP_CLONE_DRAFT_CACHE", "false"),
+    "--sglang-group-enable-native-draft-kv-cache": (
+        "SGLANG_GROUP_ENABLE_NATIVE_DRAFT_KV_CACHE",
+        "true",
+    ),
 }
 
 
@@ -156,6 +160,14 @@ def main(argv: list[str] | None = None) -> None:
         parser.add_argument(
             "--sglang-group-native-draft-max-requests",
             help="Draft request pool size for backend=sglang. Default: 1.",
+        )
+        parser.add_argument(
+            "--sglang-group-enable-native-draft-kv-cache",
+            action="store_true",
+            help=(
+                "Enable experimental accepted-context KV reuse for backend=sglang. "
+                "Default is safe rebuild per proposal."
+            ),
         )
         parser.add_argument("sglang_args", nargs=argparse.REMAINDER)
         parser.parse_args(argv)

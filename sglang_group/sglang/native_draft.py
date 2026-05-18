@@ -52,6 +52,7 @@ class _NativeDraftSnapshot:
     batch_attrs: dict[str, object]
     req_attrs: list[tuple[object, dict[str, object]]]
     allocator_state: object
+    req_to_token_rows: list[tuple[int, object]]
 
 
 @dataclass
@@ -98,6 +99,13 @@ class SGLangNativeDraftSession:
         for req, attrs in snapshot.req_attrs:
             for name, value in attrs.items():
                 setattr(req, name, _clone_for_restore(value))
+        req_to_token_pool = getattr(
+            self.backend.model_runner, "req_to_token_pool", None
+        )
+        req_to_token = getattr(req_to_token_pool, "req_to_token", None)
+        if req_to_token is not None:
+            for row_index, row_value in snapshot.req_to_token_rows:
+                req_to_token[row_index].copy_(row_value)
         self.next_token_logits = _clone_for_restore(snapshot.next_token_logits)
 
     def _take_snapshot(self) -> _NativeDraftSnapshot:
@@ -141,11 +149,25 @@ class SGLangNativeDraftSession:
             }
             req_attrs.append((req, attrs))
 
+        req_to_token_rows = []
+        req_to_token_pool = getattr(
+            self.backend.model_runner, "req_to_token_pool", None
+        )
+        req_to_token = getattr(req_to_token_pool, "req_to_token", None)
+        if req_to_token is not None:
+            for req in getattr(self.batch, "reqs", []) or []:
+                req_pool_idx = getattr(req, "req_pool_idx", None)
+                if req_pool_idx is not None:
+                    req_to_token_rows.append(
+                        (int(req_pool_idx), req_to_token[int(req_pool_idx)].clone())
+                    )
+
         return _NativeDraftSnapshot(
             next_token_logits=_clone_for_snapshot(self.next_token_logits),
             batch_attrs=batch_attrs,
             req_attrs=req_attrs,
-            allocator_state=backup_state(),
+            allocator_state=_clone_for_snapshot(backup_state()),
+            req_to_token_rows=req_to_token_rows,
         )
 
 
@@ -216,12 +238,13 @@ class SGLangNativeDraftBackend:
 
         logger.info(
             "Initialized SGLang-native draft backend: draft=%s, device=%s, "
-            "tp_rank=%s, cache_tokens=%s, max_requests=%s",
+            "tp_rank=%s, cache_tokens=%s, max_requests=%s, kv_cache=%s",
             server_args.speculative_draft_model_path,
             self.device,
             tp_rank,
             getattr(self.server_args, "draft_runner_cache_size", None),
             getattr(self.server_args, "max_num_reqs", None),
+            bool(config.native_draft_kv_cache),
         )
 
     def _configure_scratch_cache_size(self, source_server_args: object) -> None:
@@ -335,7 +358,10 @@ class SGLangNativeDraftBackend:
             raise ValueError("SGLang-native draft context must contain at least one token.")
 
         rid = str(rid)
-        if self.config.enable_draft_cache and self._cached_session is not None:
+        use_kv_cache = (
+            self.config.enable_draft_cache and self.config.native_draft_kv_cache
+        )
+        if use_kv_cache and self._cached_session is not None:
             if self._cached_rid == rid and self._cached_input_ids == ids:
                 return self._cached_session, "sglang-hit"
             if (
@@ -353,7 +379,7 @@ class SGLangNativeDraftBackend:
                 return self._cached_session, "sglang-extend"
 
         session = self.prefill(ids, rid=rid)
-        if self.config.enable_draft_cache:
+        if use_kv_cache:
             self._cached_session = session
             self._cached_rid = rid
             self._cached_input_ids = ids

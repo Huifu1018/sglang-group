@@ -114,6 +114,7 @@ class GroupSGLangConfig:
     native_draft_quantization: str | None = None
     native_draft_cache_tokens: int | None = None
     native_draft_max_requests: int = 1
+    native_draft_kv_cache: bool = False
     dtw_window: int | None = 8
     max_draft_tokens: int | None = None
     max_context_tokens: int | None = None
@@ -175,6 +176,9 @@ class GroupSGLangConfig:
             ),
             native_draft_max_requests=(
                 _env_int("SGLANG_GROUP_NATIVE_DRAFT_MAX_REQUESTS", 1) or 1
+            ),
+            native_draft_kv_cache=_env_bool(
+                "SGLANG_GROUP_ENABLE_NATIVE_DRAFT_KV_CACHE", False
             ),
             dtw_window=_env_int("SGLANG_GROUP_DTW_WINDOW", 8),
             max_draft_tokens=_env_int("SGLANG_GROUP_MAX_DRAFT_TOKENS", None),
